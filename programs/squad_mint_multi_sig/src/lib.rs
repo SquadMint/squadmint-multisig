@@ -13,8 +13,8 @@ pub mod squad_mint_multi_sig {
         msg!("Greetings from: {:?}", ctx.program_id);
         let fund = &mut ctx.accounts.fund;
         msg!("Account address: {} ", fund.key());
-        fund.authority = *ctx.accounts.authority.key;
-        fund.members.push(*ctx.accounts.authority.key); // This is possibly waste of space
+        fund.authority = *ctx.accounts.fund_creator.key;
+        fund.members.push(*ctx.accounts.fund_creator.key); // This is possibly waste of space
         fund.has_active_vote = false;
         fund.is_private_group = is_private_group;
         fund.account_handle = account_handle; // There might be no need to save this value
@@ -69,12 +69,12 @@ pub mod squad_mint_multi_sig {
 #[instruction(account_handle: String)]
 pub struct Initialize<'info> {
     #[account(mut)]
-    pub authority: Signer<'info>,
+    pub fund_creator: Signer<'info>,
     #[account(mut)]
-    pub fee_payer: Signer<'info>,
+    pub squad_mint_fee_payer: Signer<'info>, // TODO: think: we could verify this actually and keep it fixed in program?
     #[account(init,
-             payer = fee_payer,
-             seeds = [account_handle.as_bytes(), authority.key().as_ref()],
+             payer = squad_mint_fee_payer,
+             seeds = [account_handle.as_bytes(), fund_creator.key().as_ref()],
              bump,
              space = 8 + SquadMintFund::MAX_SIZE,
     )]
