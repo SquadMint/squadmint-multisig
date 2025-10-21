@@ -1,6 +1,6 @@
 # Squad Mint MultiSig
 
-The multi sig app that controls our apps voting
+The multi sig app that controls SquadMints apps voting process
 
 # Devs
 
@@ -21,3 +21,7 @@ Deploy
 ```sh
 anchor test  --skip-local-validator
 ```
+
+### Credits
+
+Design inspired by https://github.com/coral-xyz/multisig
