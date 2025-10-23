@@ -16,6 +16,12 @@ Deploy
  anchor deploy
 ```
 
+Run Local Validator
+
+```sh
+solana-test-validator
+```
+
 ## Test
 
 ```sh

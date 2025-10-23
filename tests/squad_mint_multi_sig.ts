@@ -8,6 +8,7 @@ import {AnchorError, Program} from "@coral-xyz/anchor";
 let chaiAsPromised: any;
 
 import {
+  checkAccountFieldsAreInitializedCorrectly,
   createWallet,
   findPDAForAuthority,
   getAllAccountsByAuthority,
@@ -28,7 +29,7 @@ before(async () => {
   chai.use(chaiAsPromised.default);
   walletOwnerAndCreator = await createWallet(connection, 1);
   walletOwnerAndCreator2 = await createWallet(connection, 1);
-  squadMintFeePayer = await createWallet(connection, 1);
+  squadMintFeePayer = await createWallet(connection, 3);
 
   await initializeAccount(program, walletOwnerAndCreator, squadMintFeePayer, "openFundWallet")
   await initializeAccount(program, walletOwnerAndCreator, squadMintFeePayer, "openFundWallet2")
@@ -43,46 +44,28 @@ describe("SquadMint Multisig program tests", () => {
     .squadMintMultiSig as Program<SquadMintMultiSig>;
 
   it("Accounts are initialized correctly", async () => {
-    // --- Wallet 1 Accounts ---
     const accountWallet1Data = await getAllAccountsByAuthority(
         program.account.squadMintFund,
         walletOwnerAndCreator.publicKey
     );
 
-    // Expect exactly two funds owned by walletOwnerAndCreator
     expect(accountWallet1Data.length).to.equal(2);
 
-    // Check first fund
-    const firstFund = accountWallet1Data[0].account;
-    expect(firstFund.owner.toBase58()).to.equal(walletOwnerAndCreator.publicKey.toBase58());
-    expect(firstFund.accountHandle).to.equal("openFundWallet");
-    expect(firstFund.hasActiveVote).to.be.false;
-    expect(firstFund.isPrivateGroup).to.be.false;
-    expect(firstFund.members).to.be.an("array").that.is.empty; // assuming no members yet
-    expect(firstFund.masterNonce).to.equal(0); // adjust if you increment this elsewhere
-
-    // Check second fund
-    const secondFund = accountWallet1Data[1].account;
-    expect(secondFund.owner.toBase58()).to.equal(walletOwnerAndCreator.publicKey.toBase58());
-    expect(secondFund.accountHandle).to.equal("openFundWallet2");
-    expect(secondFund.hasActiveVote).to.be.false;
-    expect(secondFund.isPrivateGroup).to.be.false;
-    expect(secondFund.members).to.be.an("array").that.is.empty;
-    expect(secondFund.masterNonce).to.equal(0);
-
-    const accountWallet2Data = await getAllAccountsByAuthority(
-        program.account.squadMintFund,
-        walletOwnerAndCreator2.publicKey
-    );
-
-    expect(accountWallet2Data.length).to.equal(1);
-
-    const wallet2Fund = accountWallet2Data[0].account;
-    expect(wallet2Fund.owner.toBase58()).to.equal(walletOwnerAndCreator2.publicKey.toBase58());
-    expect(wallet2Fund.accountHandle).to.equal("someOtherFund");
-    expect(wallet2Fund.hasActiveVote).to.be.false;
-    expect(wallet2Fund.isPrivateGroup).to.be.false;
-    expect(wallet2Fund.members).to.be.an("array").that.is.empty;
-    expect(wallet2Fund.masterNonce).to.equal(0);
+    await checkAccountFieldsAreInitializedCorrectly(program, walletOwnerAndCreator.publicKey, "openFundWallet");
+    await checkAccountFieldsAreInitializedCorrectly(program, walletOwnerAndCreator.publicKey, "openFundWallet2");
+    await checkAccountFieldsAreInitializedCorrectly(program, walletOwnerAndCreator2.publicKey, "someOtherFund");
   });
+
+  it("Add a new member correctly", async () => {
+    const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.publicKey, "openFundWallet");
+    const fund = await program.account.squadMintFund.fetch(pda);
+    memberWallet1 = await createWallet(connection, 1);
+    // await program.methods.addMember()
+    //     .accounts({myAccount: pda, authority: wallet1.publicKey})
+    //     .signers([wallet1])
+    //     .rpc()
+
+  });
+
+
 });
