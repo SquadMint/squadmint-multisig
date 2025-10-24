@@ -80,59 +80,59 @@ pub mod squad_mint_multi_sig {
     // So we will record their votes on client side with nonce accounts and the client will know that a 51%+
     // has been reached for either a yes or a no
     // we set has_active_vote = false and we make a transfer to destination_address
-    // pub fn submit_and_execute(ctx: Context<SubmitAndExecute>, signatures: Vec<[u8; 64]>) -> Result<()> {
-    //     msg!("Initiate vote to transfer, called from: {:?}", ctx.program_id);
-    //     let transaction = &mut ctx.accounts.transaction;
-    //     let multisig = &mut ctx.accounts.multisig;
-    //
-    //     require!(!transaction.did_execute, ErrorCode::AlreadyExecuted);
-    //     require!(transaction.nonce == multisig.master_nonce, ErrorCode::AlreadyExecutedInvalidNonce);
-    //     require!(multisig.has_active_vote, ErrorCode::HasNoActiveVote);
-    //
-    //     for (_, pubkey) in transaction.approved_signers.iter().enumerate() {
-    //         // TODO: verify signatures here
-    //         require!(multisig.members.contains(&pubkey), ErrorCode::MemberNotPartOfFund);
-    //     }
-    //
-    //     let required = (multisig.members.len() * SquadMintFund::SQUAD_MINT_THRESHOLD_PERCENTAGE) / 100;
-    //     require!(transaction.approved_signers.len() >= required, ErrorCode::InsufficientSignatures);
-    //     require!(signatures.len() == transaction.approved_signers.len(), ErrorCode::InvalidSignature);
-    //
-    //     transaction.signatures = signatures;
-    //     multisig.master_nonce = multisig
-    //         .master_nonce
-    //         .checked_add(1)
-    //         .ok_or(ErrorCode::NonceOverflow)?;
-    //
-    //     transaction.did_execute = true;
-    //
-    //
-    //     // Execute logic (e.g., CPI)
-    //     // ...
-    //
-    //     let transfer_ix = system_instruction::transfer(
-    //         &multisig.key(),
-    //         &transaction.message_data.proposed_to_account.key(),
-    //         transaction.message_data.amount,
-    //     );
-    //
-    //     // invoke(
-    //     //     &transfer_ix,
-    //     //     &[
-    //     //         ctx.accounts.multisig..to_account_info(),
-    //     //         ctx.accounts.recipient.to_account_info(),
-    //     //         ctx.accounts.system_program.to_account_info(),
-    //     //     ],
-    //     //     &[&[
-    //     //         b"vault",
-    //     //         multisig.key().as_ref(),
-    //     //         &[ctx.accounts.multisig.vault_bump],
-    //     //     ]],
-    //     // )?;
-    //
-    //     multisig.has_active_vote = false;
-    //     Ok(())
-    // }
+    pub fn submit_and_execute(ctx: Context<SubmitAndExecute>, signatures: Vec<[u8; 64]>) -> Result<()> {
+        msg!("Initiate vote to transfer, called from: {:?}", ctx.program_id);
+        let transaction = &mut ctx.accounts.transaction;
+        let multisig = &mut ctx.accounts.multisig;
+
+        require!(!transaction.did_execute, ErrorCode::AlreadyExecuted);
+        require!(transaction.message_data.nonce == multisig.master_nonce, ErrorCode::AlreadyExecutedInvalidNonce);
+        require!(multisig.has_active_vote, ErrorCode::HasNoActiveVote);
+
+        for (_, pubkey) in transaction.approved_signers.iter().enumerate() {
+            // TODO: verify signatures here
+            require!(multisig.members.contains(&pubkey), ErrorCode::MemberNotPartOfFund);
+        }
+
+        let required = (multisig.members.len() * SquadMintFund::SQUAD_MINT_THRESHOLD_PERCENTAGE) / 100;
+        require!(transaction.approved_signers.len() >= required, ErrorCode::InsufficientSignatures);
+        require!(signatures.len() == transaction.approved_signers.len(), ErrorCode::InvalidSignature);
+
+        transaction.signatures = signatures;
+        multisig.master_nonce = multisig
+            .master_nonce
+            .checked_add(1)
+            .ok_or(ErrorCode::NonceOverflow)?;
+
+        transaction.did_execute = true;
+
+
+        // Execute logic (e.g., CPI)
+        // ...
+
+        // let transfer_ix = system_instruction::transfer(
+        //     &multisig.key(),
+        //     &transaction.message_data.proposed_to_account.key(),
+        //     transaction.message_data.amount,
+        // );
+
+        // invoke(
+        //     &transfer_ix,
+        //     &[
+        //         ctx.accounts.multisig..to_account_info(),
+        //         ctx.accounts.recipient.to_account_info(),
+        //         ctx.accounts.system_program.to_account_info(),
+        //     ],
+        //     &[&[
+        //         b"vault",
+        //         multisig.key().as_ref(),
+        //         &[ctx.accounts.multisig.vault_bump],
+        //     ]],
+        // )?;
+
+        multisig.has_active_vote = false;
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -216,18 +216,18 @@ pub struct TransactionMessage {
     pub nonce: u64,
 }
 
-// #[derive(Accounts)]
-// pub struct SubmitAndExecute<'info> {
-//     #[account(mut)]
-//     pub fee_payer: Signer<'info>,
-//     #[account(mut)]
-//     pub transaction: Account<'info, Transaction>,
-//     #[account(mut)]
-//     pub multisig: Account<'info, SquadMintFund>,
-//     #[account(signer)]
-//     pub submitter: Signer<'info>,
-// }
-//
+#[derive(Accounts)]
+pub struct SubmitAndExecute<'info> {
+    #[account(mut)]
+    pub fee_payer: Signer<'info>,
+    #[account(mut)]
+    pub transaction: Account<'info, Transaction>,
+    #[account(mut)]
+    pub multisig: Account<'info, SquadMintFund>,
+    #[account(signer)]
+    pub submitter: Signer<'info>,
+}
+
 
 impl SquadMintFund {
     pub const SQUAD_MINT_MAX_HANDLE_SIZE: usize = 15;
