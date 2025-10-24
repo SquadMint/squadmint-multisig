@@ -1,5 +1,5 @@
 import * as anchor from "@coral-xyz/anchor";
-import {Program, Wallet} from "@coral-xyz/anchor";
+import {BN, Program, Wallet} from "@coral-xyz/anchor";
 import { SquadMintMultiSig } from "../target/types/squad_mint_multi_sig";
 import {expect} from "chai";
 
@@ -33,13 +33,23 @@ const findPDAForAuthority = async (programId: anchor.web3.PublicKey,
     return pda;
 }
 
+const findPDAForMultisigTransaction = async (programId: anchor.web3.PublicKey,
+                                   multisigOwnerAuthority: anchor.web3.PublicKey,
+                                   multisigWalletHandle: string,
+                                   currentMasterNonce: number
+                                             ) : Promise<anchor.web3.PublicKey> => {
+    let masterNonce = new BN(currentMasterNonce)
+    const [pda, _canonicalBump] = await anchor.web3.PublicKey.findProgramAddressSync([utf8.encode(multisigWalletHandle), multisigOwnerAuthority.toBytes(), masterNonce.toBuffer()], programId);
+    return pda;
+}
+
 const initializeAccount = async (program: Program<SquadMintMultiSig>,
                                  owner: anchor.web3.Keypair,
                                  squadMintFeePayer: anchor.web3.Keypair,
                                  walletHandle: string): Promise<anchor.web3.PublicKey> => {
     // const accountKeypair = anchor.web3.Keypair.generate();
     const pda = await findPDAForAuthority(program.programId, owner.publicKey, walletHandle);
-    console.log("🏋️‍♀️ Found PDA on our Client for Wallet:  " + walletHandle + " PDA: "  + pda.toBase58() + "  Authority: " + owner.publicKey.toBase58())
+    console.log("🦾️ Found PDA on our Client for Wallet:  " + walletHandle + " PDA: "  + pda.toBase58() + "  Authority: " + owner.publicKey.toBase58())
 
     await program.methods.initialize(walletHandle)
         .accounts({

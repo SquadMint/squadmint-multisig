@@ -21,12 +21,14 @@ let walletOwnerAndCreator: anchor.web3.Keypair;
 let squadMintFeePayer: anchor.web3.Keypair;
 let walletOwnerAndCreator2: anchor.web3.Keypair;
 let memberWallet1: anchor.web3.Keypair;
-let memberWallet2: anchor.web3.Keypair;
+let proposedToWallet: anchor.web3.Keypair;
 let memberWallet3: anchor.web3.Keypair;
 
 before(async () => {
   chaiAsPromised = await import("chai-as-promised");
   chai.use(chaiAsPromised.default);
+  memberWallet1 = await createWallet(connection, 1);
+  proposedToWallet = await createWallet(connection, 1);
   walletOwnerAndCreator = await createWallet(connection, 1);
   walletOwnerAndCreator2 = await createWallet(connection, 1);
   squadMintFeePayer = await createWallet(connection, 3);
@@ -58,14 +60,89 @@ describe("SquadMint Multisig program tests", () => {
 
   it("Add a new member correctly", async () => {
     const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.publicKey, "openFundWallet");
-    const fund = await program.account.squadMintFund.fetch(pda);
-    memberWallet1 = await createWallet(connection, 1);
-    // await program.methods.addMember()
-    //     .accounts({myAccount: pda, authority: wallet1.publicKey})
-    //     .signers([wallet1])
-    //     .rpc()
+    await program.methods.addMember(memberWallet1.publicKey)
+        .accounts({
+          multisig: pda,
+          multisigOwner: walletOwnerAndCreator.publicKey
+        })
+        .signers([walletOwnerAndCreator])
+        .rpc()
 
+    const fund = await program.account.squadMintFund.fetch(pda);
+    expect(fund.members).to.have.lengthOf(2);
+    expect(fund.members[1].toBase58()).to.equal(memberWallet1.publicKey.toBase58());
   });
+
+  it("try to add unInitialized member wallet to openFundWallet2", async () => {
+    const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.publicKey, "openFundWallet2");
+    let unInitializedMember = anchor.web3.Keypair.generate();
+    await program.methods.addMember(unInitializedMember.publicKey)
+        .accounts({
+          multisig: pda,
+          multisigOwner: walletOwnerAndCreator.publicKey
+        })
+        .signers([walletOwnerAndCreator])
+        .rpc()
+
+    const fund = await program.account.squadMintFund.fetch(pda);
+    expect(fund.members).to.have.lengthOf(2);
+    expect(fund.members[1].toBase58()).to.equal(unInitializedMember.publicKey.toBase58());
+  });
+
+  it("When adding unInitialized wallet and sign with a wallet that's not owner", async () => {
+    const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.publicKey, "openFundWallet2");
+    let unInitializedMember = anchor.web3.Keypair.generate();
+    let addMember =  program.methods.addMember(unInitializedMember.publicKey)
+        .accounts({
+          multisig: pda,
+          multisigOwner: walletOwnerAndCreator.publicKey
+        })
+        .signers([walletOwnerAndCreator2])
+        .rpc()
+
+    expect(addMember).to.be.rejected
+  });
+
+  it("When adding an existing member then should be rejected", async () => {
+    const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.publicKey, "openFundWallet2");
+    let addMember = program.methods.addMember(memberWallet1.publicKey)
+        .accounts({
+          multisig: pda,
+          multisigOwner: walletOwnerAndCreator.publicKey
+        })
+        .signers([walletOwnerAndCreator])
+        .rpc()
+
+    expect(addMember).to.be.rejected
+  });
+
+  it("When adding an wallet Owner again as member then should be rejected", async () => {
+    const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator2.publicKey, "someOtherFund");
+    let addMember = program.methods.addMember(walletOwnerAndCreator2.publicKey)
+        .accounts({
+          multisig: pda,
+          multisigOwner: walletOwnerAndCreator2.publicKey
+        })
+        .signers([walletOwnerAndCreator2])
+        .rpc()
+
+    expect(addMember).to.be.rejected
+  });
+
+  // TODO: test if we can fit 15 pubkeys
+
+    it("We can successfully create a proposal", async () => {
+        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator2.publicKey, "someOtherFund");
+        let amount = new anchor.BN(1);
+        let addMember = program
+            .methods
+            .createProposal(amount, proposedToWallet.publicKey).accounts({
+                    transaction:
+            })
+
+    });
+
+
 
 
 });
