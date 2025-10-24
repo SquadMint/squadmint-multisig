@@ -63,7 +63,6 @@ pub mod squad_mint_multi_sig {
         // Would you like to check the amount balance here as well
 
         transaction.belongs_to_squad_mint_fund = multisig.key();
-        transaction.program_id = ctx.program_id.key();
         transaction.message_data = TransactionMessage {
             amount,
             proposer_account: proposer,
@@ -173,11 +172,10 @@ pub struct CreateProposal<'info> {
               bump,
               space = Transaction::MAX_SIZE)]
     pub transaction: Account<'info, Transaction>,
-    pub target_program: UncheckedAccount<'info>,
-    #[account(mut)]
-    pub fee_payer: Signer<'info>,
     #[account(mut)]
     pub multisig: Account<'info, SquadMintFund>,
+    #[account(mut)]
+    pub fee_payer: Signer<'info>,
     #[account(signer)]
     pub proposer: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -199,13 +197,11 @@ pub struct UpdateFund<'info> {
 #[account]
 #[derive(Default, Debug)]
 pub struct Transaction {
-    pub belongs_to_squad_mint_fund: Pubkey, // Multisig account
-    pub program_id: Pubkey,                 // Target program
+    pub belongs_to_squad_mint_fund: Pubkey, // Multisig account , this could be part of transaction message
     pub approved_signers: Vec<Pubkey>,      // Verified signer Pubkeys
-    pub signatures: Vec<[u8; 64]>,          // Verified signatures (for audit)
+    pub signatures: Vec<[u8; 64]>,          // Verified signatures (for audit), the first signers will correspond in sigs approvals and the last sigs will be the nos
     pub message_data: TransactionMessage,   // Signable message
-    pub did_execute: bool,                  // Replay protection
-    pub nonce: u64,                         // Avoid replay; nonce for this tx updated from master_nonce
+    pub did_execute: bool                   // Replay protection
 }
 
 // This is what the members of this fund will sign

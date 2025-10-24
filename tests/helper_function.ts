@@ -33,15 +33,24 @@ const findPDAForAuthority = async (programId: anchor.web3.PublicKey,
     return pda;
 }
 
-const findPDAForMultisigTransaction = async (programId: anchor.web3.PublicKey,
-                                   multisigOwnerAuthority: anchor.web3.PublicKey,
-                                   multisigWalletHandle: string,
-                                   currentMasterNonce: number
-                                             ) : Promise<anchor.web3.PublicKey> => {
-    let masterNonce = new BN(currentMasterNonce)
-    const [pda, _canonicalBump] = await anchor.web3.PublicKey.findProgramAddressSync([utf8.encode(multisigWalletHandle), multisigOwnerAuthority.toBytes(), masterNonce.toBuffer()], programId);
+const findPDAForMultisigTransaction = async (
+    programId: anchor.web3.PublicKey,
+    multisigAuthority: anchor.web3.PublicKey,
+    multisigWalletHandle: string,
+    multisigCurrentMasterNonce: BN
+): Promise<anchor.web3.PublicKey> => {
+    const masterNonceBuffer = multisigCurrentMasterNonce.toArrayLike(Buffer, 'le', 8);
+    const [pda, _canonicalBump] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            utf8.encode(multisigWalletHandle),
+            multisigAuthority.toBytes(),
+            multisigCurrentMasterNonce.toBuffer("le", 8)
+        ],
+        programId
+    );
+
     return pda;
-}
+};
 
 const initializeAccount = async (program: Program<SquadMintMultiSig>,
                                  owner: anchor.web3.Keypair,
@@ -87,7 +96,7 @@ const checkAccountFieldsAreInitializedCorrectly = async (
     expect(fund.isPrivateGroup).to.be.true;
     expect(fund.members).to.have.lengthOf(1);
     expect(fund.members[0].toBase58()).to.equal(walletOwner.toBase58());
-    expect(fund.masterNonce).to.equal(expectedMasterNonce);
+    expect(fund.masterNonce.eq(new BN(expectedMasterNonce))).to.be.true;
 
     return fund;
 };
@@ -96,8 +105,11 @@ const checkAccountFieldsAreInitializedCorrectly = async (
 //     return await program.account.myAccount.fetch(await findPDAForAuthority(program.programId, authority))
 // }
 
-export {createWallet,
+export {
+    createWallet,
     initializeAccount,
     getAllAccountsByAuthority,
     findPDAForAuthority,
-    checkAccountFieldsAreInitializedCorrectly};
+    checkAccountFieldsAreInitializedCorrectly,
+    findPDAForMultisigTransaction
+};
