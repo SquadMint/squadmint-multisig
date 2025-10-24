@@ -44,7 +44,7 @@ const findPDAForMultisigTransaction = async (
         [
             utf8.encode(multisigWalletHandle),
             multisigAuthority.toBytes(),
-            multisigCurrentMasterNonce.toBuffer("le", 8)
+            masterNonceBuffer
         ],
         programId
     );

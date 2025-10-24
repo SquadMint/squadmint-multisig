@@ -60,7 +60,7 @@ pub mod squad_mint_multi_sig {
         require!(!multisig.has_active_vote, ErrorCode::CanOnlyInitOneVoteAtATime);
         require!(multisig.members.contains(&proposer), ErrorCode::MemberNotPartOfFund);
 
-        // Would you like to check the amount balance here as well
+        // Would you like to check the amount balance vs what we have here as well
 
         transaction.belongs_to_squad_mint_fund = multisig.key();
         transaction.message_data = TransactionMessage {
@@ -176,7 +176,10 @@ pub struct CreateProposal<'info> {
     pub multisig: Account<'info, SquadMintFund>,
     #[account(mut)]
     pub fee_payer: Signer<'info>,
-    #[account(signer)]
+    #[account(
+        signer,
+        constraint = multisig.members.contains(&proposer.key()) @ ErrorCode::MemberNotPartOfFund
+    )]
     pub proposer: Signer<'info>,
     pub system_program: Program<'info, System>,
 }

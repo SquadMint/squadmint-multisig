@@ -117,6 +117,21 @@ describe("SquadMint Multisig program tests", () => {
     expect(addMember).to.be.rejected
   });
 
+    it("When adding a new member but signer is not part of the group", async () => {
+        let unInitializedMember = anchor.web3.Keypair.generate();
+
+        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.publicKey, "openFundWallet2");
+        let addMember = program.methods.addMember(memberOpenFundWallet.publicKey)
+            .accounts({
+                multisig: pda,
+                multisigOwner: walletOwnerAndCreator.publicKey
+            })
+            .signers([unInitializedMember])
+            .rpc()
+
+        expect(addMember).to.be.rejected
+    });
+
   it("When adding an wallet Owner again as member then should be rejected", async () => {
     const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator2.publicKey, "someOtherFund");
     let addMember = program.methods.addMember(walletOwnerAndCreator2.publicKey)
@@ -170,6 +185,62 @@ describe("SquadMint Multisig program tests", () => {
             .to.equal(memberOpenFundWallet.publicKey.toBase58());
     });
 
+
+    it("Should reject when already have active proposal", async () => {
+        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.publicKey, "openFundWallet");
+
+        const openFundWallet = await program.account.squadMintFund.fetch(pda);
+        const transactionDataPDA = await findPDAForMultisigTransaction(
+            program.programId,
+            pda,
+            "openFundWallet",
+            openFundWallet.masterNonce
+        )
+        console.log("🔥 This is the PDA of the new transaction " + transactionDataPDA.toBase58())
+        let amount = new anchor.BN(1);
+        let createRejectionProposal = program
+            .methods
+            .createProposal(amount, proposedToWallet.publicKey).accounts({
+                transaction: transactionDataPDA,
+                multisig: pda,
+                feePayer: squadMintFeePayer.publicKey,
+                proposer: memberOpenFundWallet.publicKey,
+                systemProgram: anchor.web3.SystemProgram.programId // can remove this
+            })
+            .signers([squadMintFeePayer, memberOpenFundWallet])
+            .rpc();
+
+        expect(createRejectionProposal).to.be.rejected
+        expect(openFundWallet.hasActiveVote).to.be.true
+    });
+
+    it("Should reject when proposer signer is not part of the group", async () => {
+        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.publicKey, "openFundWallet");
+        let unInitializedMember = anchor.web3.Keypair.generate();
+        const openFundWallet = await program.account.squadMintFund.fetch(pda);
+        const transactionDataPDA = await findPDAForMultisigTransaction(
+            program.programId,
+            pda,
+            "openFundWallet",
+            openFundWallet.masterNonce
+        )
+        console.log("🔥 This is the PDA of the new transaction " + transactionDataPDA.toBase58())
+        let amount = new anchor.BN(1);
+        let createRejectionProposal = program
+            .methods
+            .createProposal(amount, proposedToWallet.publicKey).accounts({
+                transaction: transactionDataPDA,
+                multisig: pda,
+                feePayer: squadMintFeePayer.publicKey,
+                proposer: memberOpenFundWallet.publicKey,
+                systemProgram: anchor.web3.SystemProgram.programId // can remove this
+            })
+            .signers([squadMintFeePayer, unInitializedMember])
+            .rpc();
+
+        expect(createRejectionProposal).to.be.rejected
+        expect(openFundWallet.hasActiveVote).to.be.true
+    });
 
 
 
