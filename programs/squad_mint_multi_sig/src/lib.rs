@@ -85,10 +85,6 @@ pub mod squad_mint_multi_sig {
         Ok(())
     }
 
-    // We need nonce accounts here with signatures to prove that yes 51%+ members of this group did vote YES or NO
-    // So we will record their votes on client side with nonce accounts and the client will know that a 51%+
-    // has been reached for either a yes or a no
-    // we set has_active_vote = false and we make a transfer to destination_address
     pub fn submit_and_execute(ctx: Context<SubmitAndExecute>,
                               vote: bool) -> Result<()> {
 
@@ -98,39 +94,32 @@ pub mod squad_mint_multi_sig {
         let multisig = &mut ctx.accounts.multisig;
 
         let yes_votes = transaction.votes.iter().filter(|&&v| v).count();
-        let no_votes = transaction.votes.iter().filter(|&&v| !v).count();
+        let no_votes = transaction.votes.len() - yes_votes;
         let total_members = multisig.members.len();
-        let current_yes_percentage_signers = (yes_votes as f64 / total_members as f64) * 100.0f64;
-        let current_no_percentage_signers = (no_votes as f64 / total_members as f64) * 100.0f64;
+        let yes_percentage = (yes_votes as f64 / total_members as f64) * 100.0f64;
+        let no_percentage = (no_votes as f64 / total_members as f64) * 100.0;
+        let threshold = SquadMintFund::SQUAD_MINT_THRESHOLD_PERCENTAGE;
 
-        if current_yes_percentage_signers >= SquadMintFund::SQUAD_MINT_THRESHOLD_PERCENTAGE {
-            transaction.did_meet_threshold = true;
+        if yes_percentage >= threshold || no_percentage >= threshold {
+            transaction.did_meet_threshold = yes_percentage >= threshold;
             multisig.has_active_vote = false;
             multisig.master_nonce = multisig
                 .master_nonce
                 .checked_add(1)
                 .ok_or(ErrorCode::NonceOverflow)?;
-            msg!("Transfer funds");
+            if yes_percentage >= threshold {
+                msg!("Transfer funds");
+            }
             sol_log_compute_units();
             msg!("CU_LOG: Final compute units logged above");
-            return Ok(())
-        } else if current_no_percentage_signers >= SquadMintFund::SQUAD_MINT_THRESHOLD_PERCENTAGE {
-            transaction.did_meet_threshold = false;
-            multisig.has_active_vote = false;
-            multisig.master_nonce = multisig
-                .master_nonce
-                .checked_add(1)
-                .ok_or(ErrorCode::NonceOverflow)?;
-            // do nothing thats all
-            sol_log_compute_units();
-            msg!("CU_LOG: Final compute units logged above");
-            return Ok(())
+            return Ok(());
         }
 
+        // Continue voting
         require!(!transaction.did_meet_threshold, ErrorCode::AlreadyExecuted);
         require!(transaction.message_data.nonce == multisig.master_nonce, ErrorCode::AlreadyExecutedInvalidNonce);
         require!(multisig.has_active_vote, ErrorCode::HasNoActiveVote);
-        require!(multisig.members.len() > 0, ErrorCode::HasNoActiveVote);
+        require!(!multisig.members.is_empty(), ErrorCode::HasNoActiveVote);
         require!(multisig.members.contains(&ctx.accounts.submitter.key()), ErrorCode::MemberNotPartOfFund);
         require!(!transaction.executors.contains(&ctx.accounts.submitter.key()), ErrorCode::CannotVoteTwice);
 
@@ -160,76 +149,6 @@ pub mod squad_mint_multi_sig {
         Ok(())
     }
 }
-
-// pub fn invoke_ed25519_precompile_multi(
-//     ctx: &Context<SubmitAndExecute>,
-//     messages: &[&[u8]],
-//     signatures: &[[u8; SIGNATURE_SERIALIZED_SIZE]],
-//     pubkeys: &[[u8; PUBKEY_SERIALIZED_SIZE]],
-// ) -> Result<()> {
-//     assert_eq!(messages.len(), signatures.len());
-//     assert_eq!(signatures.len(), pubkeys.len());
-//
-//     let num_signatures = messages.len() as u8;
-//     let mut instruction_data = Vec::new();
-//     instruction_data.extend_from_slice(&[num_signatures, 0]); // padding
-//
-//     // Precompute offsets
-//     let mut offsets_vec = Vec::with_capacity(messages.len());
-//     let mut data_offset = DATA_START + (messages.len() * std::mem::size_of::<Ed25519SignatureOffsets>());
-//
-//     let mut signature_blocks = Vec::new();
-//
-//     for i in 0..messages.len() {
-//         let public_key_offset = data_offset;
-//         let signature_offset = public_key_offset + PUBKEY_SERIALIZED_SIZE;
-//         let message_data_offset = signature_offset + SIGNATURE_SERIALIZED_SIZE;
-//
-//         let offsets = Ed25519SignatureOffsets {
-//             signature_offset: signature_offset as u16,
-//             signature_instruction_index: u16::MAX,
-//             public_key_offset: public_key_offset as u16,
-//             public_key_instruction_index: u16::MAX,
-//             message_data_offset: message_data_offset as u16,
-//             message_data_size: messages[i].len() as u16,
-//             message_instruction_index: u16::MAX,
-//         };
-//
-//         offsets_vec.push(offsets);
-//
-//         data_offset = message_data_offset + messages[i].len();
-//
-//         // Collect the actual data block
-//         signature_blocks.extend_from_slice(&pubkeys[i]);
-//         signature_blocks.extend_from_slice(&signatures[i]);
-//         signature_blocks.extend_from_slice(messages[i]);
-//     }
-//
-//     // Append offsets
-//     for offsets in &offsets_vec {
-//         instruction_data.extend_from_slice(bytemuck::bytes_of(offsets));
-//     }
-//
-//     // Append actual signature/pubkey/message data
-//     instruction_data.extend_from_slice(&signature_blocks);
-//     let accounts = vec![solana_program::instruction::AccountMeta::new_readonly(
-//         ed25519_program::id(),
-//         false,
-//     )];
-//     // Build the instruction
-//     let instruction = solana_program::instruction::Instruction {
-//         program_id: ed25519_program::id(),
-//         accounts: vec![], // still fine to keep empty
-//         data: instruction_data,
-//     };
-//
-//     let account_infos: &[AccountInfo] = &[
-//         ctx.accounts.ed25519_program.to_account_info(),
-//     ];
-//
-//     invoke(&instruction, account_infos)?;
-//     Ok(())
-// }
 
 #[derive(Accounts)]
 #[instruction(account_handle: String)]

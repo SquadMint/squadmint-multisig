@@ -360,17 +360,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "brine-ed25519"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffb604b3e64e069843eb815cd108f3dfc8bfcf9c4434a3d7d832332092cd1d63"
-dependencies = [
- "curve25519-dalek",
- "sha2 0.10.9",
- "solana-curve25519",
-]
-
-[[package]]
 name = "bs58"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -508,7 +497,6 @@ dependencies = [
  "fiat-crypto",
  "rand_core 0.6.4",
  "rustc_version",
- "serde",
  "subtle",
  "zeroize",
 ]
@@ -1266,20 +1254,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-curve25519"
-version = "2.3.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eae4261b9a8613d10e77ac831a8fa60b6fa52b9b103df46d641deff9f9812a23"
-dependencies = [
- "bytemuck",
- "bytemuck_derive",
- "curve25519-dalek",
- "solana-define-syscall",
- "subtle",
- "thiserror 2.0.17",
-]
-
-[[package]]
 name = "solana-decode-error"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1954,7 +1928,6 @@ name = "squad_mint_multi_sig"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
- "brine-ed25519",
 ]
 
 [[package]]
