@@ -65,7 +65,7 @@ const initializeAccount = async (program: Program<SquadMintMultiSig>,
             multisig: pda,
             multisigOwner: owner.publicKey,
             feePayer: squadMintFeePayer.publicKey,
-            systemProgram: anchor.web3.SystemProgram.programId
+            systemProgram: anchor.web3.SystemProgram.programId,
         })
         .signers([owner, squadMintFeePayer])
         .rpc()

@@ -1,18 +1,26 @@
 use anchor_lang::prelude::*;
-use solana_program::{
+use anchor_lang::solana_program::{
     account_info::{next_account_info, AccountInfo},
     entrypoint::ProgramResult,
+    ed25519_program,
+    log::sol_log_compute_units,
     program::invoke,
+    instruction::Instruction,
     pubkey::Pubkey,
-    system_instruction,
 };
 
 declare_id!("BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz");
 // https://github.com/pvnotpv/spl-transfer-pda-poc/blob/main/programs/spl-transfer-poc/src/lib.rs
 // https://github.com/solana-developers/program-examples/tree/main/basics/transfer-sol/native/program
 // https://github.com/solana-foundation/developer-content/blob/main/content/courses/onchain-development/anchor-pdas.md
+// https://www.anchor-lang.com/docs/references/account-constraints#accounthas_one--target
+// https://www.anchor-lang.com/docs/references/account-constraints#accounttoken
+// https://beta.solpg.io/https://github.com/solana-developers/anchor-examples/tree/main/account-constraints/toke
+// https://solana.com/developers/cookbook/wallets/sign-message
+// https://solana.stackexchange.com/questions/20848/encountering-an-account-required-by-the-instruction-is-missing-error-with-ed25
 #[program]
 pub mod squad_mint_multi_sig {
+    use anchor_lang::solana_program::vote::instruction::vote;
     use super::*;
 
     pub fn initialize(ctx: Context<Initialize>, account_handle: String) -> Result<()> {
@@ -36,7 +44,7 @@ pub mod squad_mint_multi_sig {
         msg!("Add member called from: {:?}", ctx.program_id);
         let fund = &mut ctx.accounts.multisig;
         require!(fund.is_private_group, ErrorCode::OperationOnlyApplicableToPrivateGroupFund);
-        require!(fund.members.len() < 15, ErrorCode::MaxMembersReached);
+        require!(fund.members.len() < SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE, ErrorCode::MaxMembersReached);
         require!(fund.owner.key() == *ctx.accounts.multisig_owner.key, ErrorCode::CannotAddMember);
         require!(!fund.members.contains(&new_member), ErrorCode::DuplicateMember);
         fund.members.push(new_member);
@@ -69,8 +77,9 @@ pub mod squad_mint_multi_sig {
             proposed_to_account,
             nonce: multisig.master_nonce,
         };
-        transaction.approved_signers = vec![proposer];
-        transaction.did_execute = false;
+        transaction.executors = vec![proposer];
+        transaction.votes = vec![true];
+        transaction.did_meet_threshold = false;
         multisig.has_active_vote = true;
 
         Ok(())
@@ -80,60 +89,147 @@ pub mod squad_mint_multi_sig {
     // So we will record their votes on client side with nonce accounts and the client will know that a 51%+
     // has been reached for either a yes or a no
     // we set has_active_vote = false and we make a transfer to destination_address
-    pub fn submit_and_execute(ctx: Context<SubmitAndExecute>, signatures: Vec<[u8; 64]>) -> Result<()> {
+    pub fn submit_and_execute(ctx: Context<SubmitAndExecute>,
+                              vote: bool) -> Result<()> {
+
         msg!("Initiate vote to transfer, called from: {:?}", ctx.program_id);
+
         let transaction = &mut ctx.accounts.transaction;
         let multisig = &mut ctx.accounts.multisig;
 
-        require!(!transaction.did_execute, ErrorCode::AlreadyExecuted);
-        require!(transaction.message_data.nonce == multisig.master_nonce, ErrorCode::AlreadyExecutedInvalidNonce);
-        require!(multisig.has_active_vote, ErrorCode::HasNoActiveVote);
+        let yes_votes = transaction.votes.iter().filter(|&&v| v).count();
+        let no_votes = transaction.votes.iter().filter(|&&v| !v).count();
+        let total_members = multisig.members.len();
+        let current_yes_percentage_signers = (yes_votes as f64 / total_members as f64) * 100.0f64;
+        let current_no_percentage_signers = (no_votes as f64 / total_members as f64) * 100.0f64;
 
-        for (_, pubkey) in transaction.approved_signers.iter().enumerate() {
-            // TODO: verify signatures here
-            require!(multisig.members.contains(&pubkey), ErrorCode::MemberNotPartOfFund);
+        if current_yes_percentage_signers >= SquadMintFund::SQUAD_MINT_THRESHOLD_PERCENTAGE {
+            transaction.did_meet_threshold = true;
+            multisig.has_active_vote = false;
+            multisig.master_nonce = multisig
+                .master_nonce
+                .checked_add(1)
+                .ok_or(ErrorCode::NonceOverflow)?;
+            msg!("Transfer funds");
+            sol_log_compute_units();
+            msg!("CU_LOG: Final compute units logged above");
+            return Ok(())
+        } else if current_no_percentage_signers >= SquadMintFund::SQUAD_MINT_THRESHOLD_PERCENTAGE {
+            transaction.did_meet_threshold = false;
+            multisig.has_active_vote = false;
+            multisig.master_nonce = multisig
+                .master_nonce
+                .checked_add(1)
+                .ok_or(ErrorCode::NonceOverflow)?;
+            // do nothing thats all
+            sol_log_compute_units();
+            msg!("CU_LOG: Final compute units logged above");
+            return Ok(())
         }
 
-        let required = (multisig.members.len() * SquadMintFund::SQUAD_MINT_THRESHOLD_PERCENTAGE) / 100;
-        require!(transaction.approved_signers.len() >= required, ErrorCode::InsufficientSignatures);
-        require!(signatures.len() == transaction.approved_signers.len(), ErrorCode::InvalidSignature);
+        require!(!transaction.did_meet_threshold, ErrorCode::AlreadyExecuted);
+        require!(transaction.message_data.nonce == multisig.master_nonce, ErrorCode::AlreadyExecutedInvalidNonce);
+        require!(multisig.has_active_vote, ErrorCode::HasNoActiveVote);
+        require!(multisig.members.len() > 0, ErrorCode::HasNoActiveVote);
+        require!(multisig.members.contains(&ctx.accounts.submitter.key()), ErrorCode::MemberNotPartOfFund);
+        require!(!transaction.executors.contains(&ctx.accounts.submitter.key()), ErrorCode::CannotVoteTwice);
 
-        transaction.signatures = signatures;
+        transaction.executors.push(ctx.accounts.submitter.key());
+        transaction.votes.push(vote);
+
+        sol_log_compute_units();
+        msg!("CU_LOG: Final compute units logged above");
+        Ok(())
+    }
+
+    pub fn close_declined_vote(ctx: Context<SubmitAndExecute>) -> Result<()> {
+        let multisig = &mut ctx.accounts.multisig;
+        let transaction = &mut ctx.accounts.transaction;
+
+        let submitter = ctx.accounts.submitter.key();
+
+        require!(!multisig.has_active_vote, ErrorCode::CanOnlyInitOneVoteAtATime);
+        require!(multisig.members.contains(&submitter), ErrorCode::MemberNotPartOfFund);
+
         multisig.master_nonce = multisig
             .master_nonce
             .checked_add(1)
             .ok_or(ErrorCode::NonceOverflow)?;
-
-        transaction.did_execute = true;
-
-
-        // Execute logic (e.g., CPI)
-        // ...
-
-        // let transfer_ix = system_instruction::transfer(
-        //     &multisig.key(),
-        //     &transaction.message_data.proposed_to_account.key(),
-        //     transaction.message_data.amount,
-        // );
-
-        // invoke(
-        //     &transfer_ix,
-        //     &[
-        //         ctx.accounts.multisig..to_account_info(),
-        //         ctx.accounts.recipient.to_account_info(),
-        //         ctx.accounts.system_program.to_account_info(),
-        //     ],
-        //     &[&[
-        //         b"vault",
-        //         multisig.key().as_ref(),
-        //         &[ctx.accounts.multisig.vault_bump],
-        //     ]],
-        // )?;
-
+        transaction.did_meet_threshold = false;
         multisig.has_active_vote = false;
         Ok(())
     }
 }
+
+// pub fn invoke_ed25519_precompile_multi(
+//     ctx: &Context<SubmitAndExecute>,
+//     messages: &[&[u8]],
+//     signatures: &[[u8; SIGNATURE_SERIALIZED_SIZE]],
+//     pubkeys: &[[u8; PUBKEY_SERIALIZED_SIZE]],
+// ) -> Result<()> {
+//     assert_eq!(messages.len(), signatures.len());
+//     assert_eq!(signatures.len(), pubkeys.len());
+//
+//     let num_signatures = messages.len() as u8;
+//     let mut instruction_data = Vec::new();
+//     instruction_data.extend_from_slice(&[num_signatures, 0]); // padding
+//
+//     // Precompute offsets
+//     let mut offsets_vec = Vec::with_capacity(messages.len());
+//     let mut data_offset = DATA_START + (messages.len() * std::mem::size_of::<Ed25519SignatureOffsets>());
+//
+//     let mut signature_blocks = Vec::new();
+//
+//     for i in 0..messages.len() {
+//         let public_key_offset = data_offset;
+//         let signature_offset = public_key_offset + PUBKEY_SERIALIZED_SIZE;
+//         let message_data_offset = signature_offset + SIGNATURE_SERIALIZED_SIZE;
+//
+//         let offsets = Ed25519SignatureOffsets {
+//             signature_offset: signature_offset as u16,
+//             signature_instruction_index: u16::MAX,
+//             public_key_offset: public_key_offset as u16,
+//             public_key_instruction_index: u16::MAX,
+//             message_data_offset: message_data_offset as u16,
+//             message_data_size: messages[i].len() as u16,
+//             message_instruction_index: u16::MAX,
+//         };
+//
+//         offsets_vec.push(offsets);
+//
+//         data_offset = message_data_offset + messages[i].len();
+//
+//         // Collect the actual data block
+//         signature_blocks.extend_from_slice(&pubkeys[i]);
+//         signature_blocks.extend_from_slice(&signatures[i]);
+//         signature_blocks.extend_from_slice(messages[i]);
+//     }
+//
+//     // Append offsets
+//     for offsets in &offsets_vec {
+//         instruction_data.extend_from_slice(bytemuck::bytes_of(offsets));
+//     }
+//
+//     // Append actual signature/pubkey/message data
+//     instruction_data.extend_from_slice(&signature_blocks);
+//     let accounts = vec![solana_program::instruction::AccountMeta::new_readonly(
+//         ed25519_program::id(),
+//         false,
+//     )];
+//     // Build the instruction
+//     let instruction = solana_program::instruction::Instruction {
+//         program_id: ed25519_program::id(),
+//         accounts: vec![], // still fine to keep empty
+//         data: instruction_data,
+//     };
+//
+//     let account_infos: &[AccountInfo] = &[
+//         ctx.accounts.ed25519_program.to_account_info(),
+//     ];
+//
+//     invoke(&instruction, account_infos)?;
+//     Ok(())
+// }
 
 #[derive(Accounts)]
 #[instruction(account_handle: String)]
@@ -192,6 +288,7 @@ pub struct UpdateFund<'info> {
     )]
     pub multisig: Account<'info, SquadMintFund>,
     #[account(
+        signer,
         constraint = multisig_owner.key() == multisig.owner @ ErrorCode::MemberNotPartOfFund
     )]
     pub multisig_owner: Signer<'info>,
@@ -201,10 +298,10 @@ pub struct UpdateFund<'info> {
 #[derive(Default, Debug)]
 pub struct Transaction {
     pub belongs_to_squad_mint_fund: Pubkey, // Multisig account , this could be part of transaction message
-    pub approved_signers: Vec<Pubkey>,      // Verified signer Pubkeys
-    pub signatures: Vec<[u8; 64]>,          // Verified signatures (for audit), the first signers will correspond in sigs approvals and the last sigs will be the nos
+    pub executors: Vec<Pubkey>,             // Verified signer Pubkeys
+    pub votes: Vec<bool>,                   //
     pub message_data: TransactionMessage,   // Signable message
-    pub did_execute: bool                   // Replay protection
+    pub did_meet_threshold: bool            // Replay protection
 }
 
 // This is what the members of this fund will sign
@@ -219,20 +316,37 @@ pub struct TransactionMessage {
 #[derive(Accounts)]
 pub struct SubmitAndExecute<'info> {
     #[account(mut)]
+    pub transaction: Account<'info, Transaction>,
+    #[account(mut)]
+    pub multisig: Account<'info, SquadMintFund>,
+    #[account(mut)]
     pub fee_payer: Signer<'info>,
+    #[account(
+        signer,
+        constraint = multisig.members.contains(&submitter.key()) @ ErrorCode::MemberNotPartOfFund
+    )]
+    pub submitter: Signer<'info>,
+}
+#[derive(Accounts)]
+pub struct CloseDeclinedVote<'info> {
     #[account(mut)]
     pub transaction: Account<'info, Transaction>,
     #[account(mut)]
     pub multisig: Account<'info, SquadMintFund>,
-    #[account(signer)]
+    #[account(
+        signer,
+        constraint = multisig.members.contains(&submitter.key()) @ ErrorCode::MemberNotPartOfFund
+    )]
     pub submitter: Signer<'info>,
+
+    // we could also hard code our fee payer account here
 }
 
 
 impl SquadMintFund {
     pub const SQUAD_MINT_MAX_HANDLE_SIZE: usize = 15;
     pub const SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE: usize = 15;
-    pub const SQUAD_MINT_THRESHOLD_PERCENTAGE: usize = 51;
+    pub const SQUAD_MINT_THRESHOLD_PERCENTAGE: f64 = 51.0;
 
     // account handle
     // + owner
@@ -279,5 +393,6 @@ pub enum ErrorCode {
     AlreadyExecutedInvalidNonce,
     InvalidSignature,
     InsufficientSignatures,
-    NonceOverflow
+    NonceOverflow,
+    CannotVoteTwice
 }

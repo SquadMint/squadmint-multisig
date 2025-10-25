@@ -3,6 +3,7 @@ import chai from "chai";
 import { expect } from "chai";
 import * as anchor from "@coral-xyz/anchor";
 import {AnchorError, BN, Program} from "@coral-xyz/anchor";
+import nacl from "tweetnacl";
 
 // Initialize chai-as-promised inside a setup function or describe block
 let chaiAsPromised: any;
@@ -93,6 +94,7 @@ describe("SquadMint Multisig program tests", () => {
   it("When adding unInitialized wallet and sign with a wallet that's not owner", async () => {
     const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.publicKey, "openFundWallet2");
     let unInitializedMember = anchor.web3.Keypair.generate();
+
     let addMember = program.methods.addMember(unInitializedMember.publicKey)
         .accounts({
           multisig: pda,
@@ -174,7 +176,7 @@ describe("SquadMint Multisig program tests", () => {
         const oFundTxProposal = await program.account.transaction.fetch(transactionDataPDA);
 
         expect(oFundTxProposal.belongsToSquadMintFund.toBase58()).to.be.equal(pda.toBase58())
-        expect(oFundTxProposal.didExecute).to.be.equal(false)
+        expect(oFundTxProposal.didMeetThreshold).to.be.equal(false)
         expect(oFundTxProposal.signatures).to.be.empty
         expect(oFundTxProposal.approvedSigners).to.have.lengthOf(1);
 
@@ -242,6 +244,38 @@ describe("SquadMint Multisig program tests", () => {
         expect(openFundWallet.hasActiveVote).to.be.true
     });
 
+    it("Accept transfer then submit and execute current proposal", async () => {
+        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.publicKey, "openFundWallet");
+        const openFundWallet = await program.account.squadMintFund.fetch(pda);
+        const transactionDataPDA = await findPDAForMultisigTransaction(program.programId, pda, "openFundWallet", openFundWallet.masterNonce)
+        const oFundTxProposal = await program.account.transaction.fetch(transactionDataPDA);
+        const transactionMessageData = oFundTxProposal.messageData
 
+        // First check if everything is expected
+        expect(oFundTxProposal.messageData.amount.eq(new BN(1))).to.be.true;
+        expect(oFundTxProposal.messageData.nonce.eq(new BN(openFundWallet.masterNonce))).to.be.true;
+        expect(oFundTxProposal.messageData.proposerAccount.toBase58())
+            .to.equal(memberOpenFundWallet.publicKey.toBase58());
 
+        const messageBytes = Buffer.from(JSON.stringify(transactionMessageData));
+        const signatureOfMember1 = nacl.sign.detached(messageBytes, walletOwnerAndCreator.secretKey);
+        const signatureOfMember2 = nacl.sign.detached(messageBytes, memberOpenFundWallet.secretKey);
+        const signatures = [
+            Array.from(signatureOfMember1),
+            Array.from(signatureOfMember2)
+        ];
+        
+        await program.methods.submitAndExecute([walletOwnerAndCreator.publicKey, memberOpenFundWallet.publicKey], signatures)
+            .accounts({
+                transaction: transactionDataPDA,
+                multisig: pda,
+                feePayer: squadMintFeePayer.publicKey,
+                submitter: walletOwnerAndCreator.publicKey,
+            })
+            .signers([squadMintFeePayer, walletOwnerAndCreator])
+            .rpc()
+
+        const multisig = await program.account.squadMintFund.fetch(pda);
+        expect(multisig.hasActiveVote).to.be.false
+    });
 });
