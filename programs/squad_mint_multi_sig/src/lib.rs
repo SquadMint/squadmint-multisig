@@ -20,7 +20,6 @@ declare_id!("BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz");
 // https://solana.stackexchange.com/questions/20848/encountering-an-account-required-by-the-instruction-is-missing-error-with-ed25
 #[program]
 pub mod squad_mint_multi_sig {
-    use anchor_lang::solana_program::vote::instruction::vote;
     use super::*;
 
     pub fn initialize(ctx: Context<Initialize>, account_handle: String) -> Result<()> {
@@ -87,20 +86,31 @@ pub mod squad_mint_multi_sig {
 
     pub fn submit_and_execute(ctx: Context<SubmitAndExecute>,
                               vote: bool) -> Result<()> {
-
         msg!("Initiate vote to transfer, called from: {:?}", ctx.program_id);
 
         let transaction = &mut ctx.accounts.transaction;
         let multisig = &mut ctx.accounts.multisig;
+        require!(multisig.has_active_vote, ErrorCode::HasNoActiveVote);
+        require!(!transaction.did_meet_threshold, ErrorCode::AlreadyExecuted);
+        require!(transaction.message_data.nonce == multisig.master_nonce, ErrorCode::AlreadyExecutedInvalidNonce);
+        require!(!multisig.members.is_empty(), ErrorCode::HasNoActiveVote);
+
+        let submitter_has_voted = transaction.executors.contains(&ctx.accounts.submitter.key());
+        if !submitter_has_voted {
+            require!(multisig.members.contains(&ctx.accounts.submitter.key()), ErrorCode::MemberNotPartOfFund);
+            require!(!transaction.executors.contains(&ctx.accounts.submitter.key()), ErrorCode::CannotVoteTwice);
+            transaction.executors.push(ctx.accounts.submitter.key());
+            transaction.votes.push(vote);
+        }
 
         let yes_votes = transaction.votes.iter().filter(|&&v| v).count();
         let no_votes = transaction.votes.len() - yes_votes;
         let total_members = multisig.members.len();
         let yes_percentage = (yes_votes as f64 / total_members as f64) * 100.0f64;
-        let no_percentage = (no_votes as f64 / total_members as f64) * 100.0;
+        let no_percentage = (no_votes as f64 / total_members as f64) * 100.0f64;
         let threshold = SquadMintFund::SQUAD_MINT_THRESHOLD_PERCENTAGE;
 
-        if yes_percentage >= threshold || no_percentage >= threshold {
+        if yes_percentage >= threshold || no_percentage >= 50.0f64 {
             transaction.did_meet_threshold = yes_percentage >= threshold;
             multisig.has_active_vote = false;
             multisig.master_nonce = multisig
@@ -115,37 +125,8 @@ pub mod squad_mint_multi_sig {
             return Ok(());
         }
 
-        // Continue voting
-        require!(!transaction.did_meet_threshold, ErrorCode::AlreadyExecuted);
-        require!(transaction.message_data.nonce == multisig.master_nonce, ErrorCode::AlreadyExecutedInvalidNonce);
-        require!(multisig.has_active_vote, ErrorCode::HasNoActiveVote);
-        require!(!multisig.members.is_empty(), ErrorCode::HasNoActiveVote);
-        require!(multisig.members.contains(&ctx.accounts.submitter.key()), ErrorCode::MemberNotPartOfFund);
-        require!(!transaction.executors.contains(&ctx.accounts.submitter.key()), ErrorCode::CannotVoteTwice);
-
-        transaction.executors.push(ctx.accounts.submitter.key());
-        transaction.votes.push(vote);
-
         sol_log_compute_units();
         msg!("CU_LOG: Final compute units logged above");
-        Ok(())
-    }
-
-    pub fn close_declined_vote(ctx: Context<SubmitAndExecute>) -> Result<()> {
-        let multisig = &mut ctx.accounts.multisig;
-        let transaction = &mut ctx.accounts.transaction;
-
-        let submitter = ctx.accounts.submitter.key();
-
-        require!(!multisig.has_active_vote, ErrorCode::CanOnlyInitOneVoteAtATime);
-        require!(multisig.members.contains(&submitter), ErrorCode::MemberNotPartOfFund);
-
-        multisig.master_nonce = multisig
-            .master_nonce
-            .checked_add(1)
-            .ok_or(ErrorCode::NonceOverflow)?;
-        transaction.did_meet_threshold = false;
-        multisig.has_active_vote = false;
         Ok(())
     }
 }
@@ -246,21 +227,6 @@ pub struct SubmitAndExecute<'info> {
     )]
     pub submitter: Signer<'info>,
 }
-#[derive(Accounts)]
-pub struct CloseDeclinedVote<'info> {
-    #[account(mut)]
-    pub transaction: Account<'info, Transaction>,
-    #[account(mut)]
-    pub multisig: Account<'info, SquadMintFund>,
-    #[account(
-        signer,
-        constraint = multisig.members.contains(&submitter.key()) @ ErrorCode::MemberNotPartOfFund
-    )]
-    pub submitter: Signer<'info>,
-
-    // we could also hard code our fee payer account here
-}
-
 
 impl SquadMintFund {
     pub const SQUAD_MINT_MAX_HANDLE_SIZE: usize = 15;

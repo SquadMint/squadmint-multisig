@@ -22,14 +22,15 @@ let walletOwnerAndCreator: anchor.web3.Keypair;
 let squadMintFeePayer: anchor.web3.Keypair;
 let walletOwnerAndCreator2: anchor.web3.Keypair;
 let memberOpenFundWallet: anchor.web3.Keypair;
+let memberOpenFundWallet2: anchor.web3.Keypair;
 let proposedToWallet: anchor.web3.Keypair;
-let memberWallet3: anchor.web3.Keypair;
 
 before(async () => {
   chaiAsPromised = await import("chai-as-promised");
   chai.use(chaiAsPromised.default);
   memberOpenFundWallet = await createWallet(connection, 1);
   proposedToWallet = await createWallet(connection, 1);
+  memberOpenFundWallet2 = await createWallet(connection, 2);
   walletOwnerAndCreator = await createWallet(connection, 1);
   walletOwnerAndCreator2 = await createWallet(connection, 1);
   squadMintFeePayer = await createWallet(connection, 5);
@@ -61,7 +62,6 @@ describe("SquadMint Multisig program tests", () => {
 
   it("Add a new member correctly", async () => {
     const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.publicKey, "openFundWallet");
-    // @ts-ignore
       await program.methods.addMember(memberOpenFundWallet.publicKey)
         .accounts({
           multisig: pda,
@@ -177,8 +177,10 @@ describe("SquadMint Multisig program tests", () => {
 
         expect(oFundTxProposal.belongsToSquadMintFund.toBase58()).to.be.equal(pda.toBase58())
         expect(oFundTxProposal.didMeetThreshold).to.be.equal(false)
-        expect(oFundTxProposal.signatures).to.be.empty
-        expect(oFundTxProposal.approvedSigners).to.have.lengthOf(1);
+        expect(oFundTxProposal.executors).to.have.lengthOf(1);
+        expect(oFundTxProposal.votes).to.have.lengthOf(1);
+        expect(oFundTxProposal.executors[0].toBase58())
+            .to.equal(memberOpenFundWallet.publicKey.toBase58());
 
         expect(oFundTxProposal.messageData.proposedToAccount.toBase58()).to.be.equal(proposedToWallet.publicKey.toBase58())
         expect(oFundTxProposal.messageData.amount.eq(new BN(amount))).to.be.true;
@@ -249,7 +251,6 @@ describe("SquadMint Multisig program tests", () => {
         const openFundWallet = await program.account.squadMintFund.fetch(pda);
         const transactionDataPDA = await findPDAForMultisigTransaction(program.programId, pda, "openFundWallet", openFundWallet.masterNonce)
         const oFundTxProposal = await program.account.transaction.fetch(transactionDataPDA);
-        const transactionMessageData = oFundTxProposal.messageData
 
         // First check if everything is expected
         expect(oFundTxProposal.messageData.amount.eq(new BN(1))).to.be.true;
@@ -257,15 +258,8 @@ describe("SquadMint Multisig program tests", () => {
         expect(oFundTxProposal.messageData.proposerAccount.toBase58())
             .to.equal(memberOpenFundWallet.publicKey.toBase58());
 
-        const messageBytes = Buffer.from(JSON.stringify(transactionMessageData));
-        const signatureOfMember1 = nacl.sign.detached(messageBytes, walletOwnerAndCreator.secretKey);
-        const signatureOfMember2 = nacl.sign.detached(messageBytes, memberOpenFundWallet.secretKey);
-        const signatures = [
-            Array.from(signatureOfMember1),
-            Array.from(signatureOfMember2)
-        ];
-        
-        await program.methods.submitAndExecute([walletOwnerAndCreator.publicKey, memberOpenFundWallet.publicKey], signatures)
+        // wallet owner approves which should be second from the member who proposed
+        await program.methods.submitAndExecute(true)
             .accounts({
                 transaction: transactionDataPDA,
                 multisig: pda,
@@ -275,7 +269,128 @@ describe("SquadMint Multisig program tests", () => {
             .signers([squadMintFeePayer, walletOwnerAndCreator])
             .rpc()
 
+
         const multisig = await program.account.squadMintFund.fetch(pda);
+        const fundTx = await program.account.transaction.fetch(transactionDataPDA);
+
         expect(multisig.hasActiveVote).to.be.false
+        expect(multisig.masterNonce.eq(new anchor.BN(1))).to.be.true
+        expect(fundTx.didMeetThreshold).to.be.eq( true)
+        expect(fundTx.votes).to.not.be.empty;
+        expect(fundTx.executors[0].toBase58())
+            .to.equal(memberOpenFundWallet.publicKey.toBase58());
+        expect(fundTx.executors[1].toBase58())
+            .to.equal(walletOwnerAndCreator.publicKey.toBase58());
+        expect(fundTx.votes[0])
+            .to.equal(true);
+        expect(fundTx.votes[1])
+            .to.equal(true);
+    });
+
+    it("Reject transfer when NO vote is 51% or more", async () => {
+        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator2.publicKey, "someOtherFund");
+        const openFundWallet = await program.account.squadMintFund.fetch(pda);
+        const transactionDataPDA = await findPDAForMultisigTransaction(program.programId, pda, "someOtherFund", openFundWallet.masterNonce)
+
+        expect(openFundWallet.masterNonce.eq(new anchor.BN(0))).to.be.true
+        expect(openFundWallet.hasActiveVote).to.be.eq(false)
+        expect(openFundWallet.members).to.have.lengthOf(1);
+
+        let amount = new anchor.BN(1);
+        await program
+            .methods
+            .createProposal(amount, proposedToWallet.publicKey).accounts({
+                transaction: transactionDataPDA,
+                multisig: pda,
+                feePayer: squadMintFeePayer.publicKey,
+                proposer: walletOwnerAndCreator2.publicKey,
+                systemProgram: anchor.web3.SystemProgram.programId // can remove this
+            })
+            .signers([squadMintFeePayer, walletOwnerAndCreator2])
+            .rpc();
+
+        const f = await program.account.transaction.fetch(transactionDataPDA);
+
+        expect(f.votes[0])
+            .to.equal(true);
+
+
+        await program.methods.addMember(memberOpenFundWallet2.publicKey)
+            .accounts({
+                multisig: pda,
+                multisigOwner: walletOwnerAndCreator2.publicKey
+            })
+            .signers([walletOwnerAndCreator2])
+            .rpc()
+
+        const m = await program.account.squadMintFund.fetch(pda);
+        expect(m.members).to.have.lengthOf(2);
+
+        // NACKED
+        await program.methods.submitAndExecute(false)
+            .accounts({
+                transaction: transactionDataPDA,
+                multisig: pda,
+                feePayer: squadMintFeePayer.publicKey,
+                submitter: memberOpenFundWallet2.publicKey,
+            })
+            .signers([squadMintFeePayer, memberOpenFundWallet2])
+            .rpc()
+
+
+        const multisig = await program.account.squadMintFund.fetch(pda);
+        const fundTx = await program.account.transaction.fetch(transactionDataPDA);
+
+        expect(multisig.hasActiveVote).to.be.false
+        expect(multisig.masterNonce.eq(new anchor.BN(1))).to.be.true
+
+        expect(fundTx.didMeetThreshold).to.be.eq( false)
+        expect(fundTx.votes).to.not.be.empty;
+        expect(fundTx.executors[0].toBase58())
+            .to.equal(walletOwnerAndCreator2.publicKey.toBase58());
+        expect(fundTx.executors[1].toBase58())
+            .to.equal(memberOpenFundWallet2.publicKey.toBase58());
+        expect(fundTx.votes[0])
+            .to.equal(true);
+        expect(fundTx.votes[1])
+            .to.equal(false);
+
+        // TODO: check balance did not change
+    });
+
+    it("Reject duplicate vote on proposal", async () => {
+        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.publicKey, "openFundWallet");
+        const openFundWallet = await program.account.squadMintFund.fetch(pda);
+        const transactionDataPDA = await findPDAForMultisigTransaction(program.programId, pda, "openFundWallet", openFundWallet.masterNonce);
+
+        let vote = program.methods.submitAndExecute(true)
+            .accounts({
+                transaction: transactionDataPDA,
+                multisig: pda,
+                feePayer: squadMintFeePayer.publicKey,
+                submitter: walletOwnerAndCreator.publicKey,
+            })
+            .signers([squadMintFeePayer, walletOwnerAndCreator])
+            .rpc()
+
+        expect(vote).to.be.rejected
+    });
+
+    it("Reject duplicate but flipped vote on proposal", async () => {
+        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.publicKey, "openFundWallet");
+        const openFundWallet = await program.account.squadMintFund.fetch(pda);
+        const transactionDataPDA = await findPDAForMultisigTransaction(program.programId, pda, "openFundWallet", openFundWallet.masterNonce);
+
+        let vote = program.methods.submitAndExecute(false)
+            .accounts({
+                transaction: transactionDataPDA,
+                multisig: pda,
+                feePayer: squadMintFeePayer.publicKey,
+                submitter: walletOwnerAndCreator.publicKey,
+            })
+            .signers([squadMintFeePayer, walletOwnerAndCreator])
+            .rpc()
+
+        expect(vote).to.be.rejected
     });
 });
