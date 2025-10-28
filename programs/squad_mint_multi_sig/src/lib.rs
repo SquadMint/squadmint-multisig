@@ -48,7 +48,7 @@ pub mod squad_mint_multi_sig {
         require!(!fund.members.contains(&new_member), ErrorCode::DuplicateMember);
         fund.members.push(new_member);
 
-        msg!("Added new member: {:?}. Total members: {}", new_member.key(), fund.members.len());
+        msg!("Added new member: {} | fund {}. Total members: {}", new_member.key(), fund.key() , fund.members.len());
 
         Ok(())
     }
@@ -59,7 +59,7 @@ pub mod squad_mint_multi_sig {
     pub fn create_proposal(ctx: Context<CreateProposal>,
                            amount: u64,
                            proposed_to_account: Pubkey) -> Result<()> {
-        msg!("Initiate vote to transfer, called from: {:?}", ctx.program_id);
+        msg!("Initiate vote Create Proposal, called from: {:?}", ctx.program_id);
         let transaction = &mut ctx.accounts.transaction;
         let multisig = &mut ctx.accounts.multisig;
         let proposer = ctx.accounts.proposer.key();
@@ -80,7 +80,12 @@ pub mod squad_mint_multi_sig {
         transaction.votes = vec![true];
         transaction.did_meet_threshold = false;
         multisig.has_active_vote = true;
-
+        msg!(
+            "Created TX | proposer: {} | multisig: {} | proposed_to_account: {}",
+            proposer,
+            multisig.key(),
+            proposed_to_account
+        );
         Ok(())
     }
 
@@ -101,6 +106,7 @@ pub mod squad_mint_multi_sig {
             require!(!transaction.executors.contains(&ctx.accounts.submitter.key()), ErrorCode::CannotVoteTwice);
             transaction.executors.push(ctx.accounts.submitter.key());
             transaction.votes.push(vote);
+            msg!("Has Voted {} to Fund {}", &ctx.accounts.submitter.key(), multisig.key())
         }
 
         let yes_votes = transaction.votes.iter().filter(|&&v| v).count();
@@ -120,6 +126,7 @@ pub mod squad_mint_multi_sig {
             if yes_percentage >= threshold {
                 msg!("Transfer funds");
             }
+            msg!("Threshold met , Exiting transaction {}. Submitter: {}", transaction.key(), ctx.accounts.submitter.key());
             sol_log_compute_units();
             msg!("CU_LOG: Final compute units logged above");
             return Ok(());
@@ -133,7 +140,7 @@ pub mod squad_mint_multi_sig {
 
 #[derive(Accounts)]
 #[instruction(account_handle: String)]
-pub struct Initialize<'info> { // ADD a close argument here must be multisig_owner, the fee_payer maybe
+pub struct Initialize<'info> {
     #[account(
         init,
         seeds = [account_handle.as_bytes(), multisig_owner.key().as_ref()],
@@ -145,7 +152,7 @@ pub struct Initialize<'info> { // ADD a close argument here must be multisig_own
     #[account(signer)]
     pub multisig_owner: Signer<'info>,
     #[account(mut)]
-    pub fee_payer: Signer<'info>,                   // TODO: think: we could verify this actually and keep it fixed in program?
+    pub fee_payer: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -181,7 +188,7 @@ pub struct CreateProposal<'info> {
 }
 
 #[derive(Accounts)]
-pub struct UpdateFund<'info> {
+pub struct UpdateFund<'info> { // Should input amount and add this to the Tx to refund add to group
     #[account(mut,
         seeds = [multisig.account_handle.as_bytes(), multisig.owner.key().as_ref()],
         bump
