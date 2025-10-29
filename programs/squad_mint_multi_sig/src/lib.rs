@@ -2,17 +2,21 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     account_info::{ next_account_info, AccountInfo },
     entrypoint::ProgramResult,
-    ed25519_program,
-    log::sol_log_compute_units,
+    // ed25519_program,
+    // log::sol_log_compute_units,
     program::invoke,
     instruction::Instruction,
     pubkey::Pubkey,
 };
 
-use  anchor_spl::{
-    token::{ Mint, Token, TokenAccount, Transfer, transfer },
-    associated_token::AssociatedToken
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{Token, TokenAccount, Transfer, transfer},
 };
+
+
+use anchor_spl::token_interface::{TokenInterface, Mint};
+
 
 declare_id!("BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz");
 // https://github.com/pvnotpv/spl-transfer-pda-poc/blob/main/programs/spl-transfer-poc/src/lib.rs
@@ -140,7 +144,6 @@ pub mod squad_mint_multi_sig {
             if yes_percentage >= threshold {
                 let amount = transaction.message_data.amount;
                 require!(ctx.accounts.multisig_ata.amount >= amount, ErrorCode::InsufficientFunds);
-
                 let seeds: &[&[u8]; 3] = &[
                     b"token_vault".as_ref(),
                     multisig_key.as_ref(),
@@ -163,12 +166,12 @@ pub mod squad_mint_multi_sig {
                 msg!("TRANSFERRED {} to {}", amount, transaction.message_data.proposed_to_account);
             }
             msg!("Threshold met , Exiting transaction {}. Submitter: {}", transaction.key(), ctx.accounts.submitter.key());
-            sol_log_compute_units();
+            // sol_log_compute_units();
             msg!("CU_LOG: Final compute units logged above");
             return Ok(());
         }
 
-        sol_log_compute_units();
+        // sol_log_compute_units();
         msg!("CU_LOG: Final compute units logged above");
         Ok(())
     }
@@ -189,7 +192,8 @@ pub struct Initialize<'info> {
     pub multisig_owner: Signer<'info>,
     #[account(mut)]
     pub fee_payer: Signer<'info>,
-    pub mint: Account<'info, Mint>,
+    #[account(mut)]
+    pub mint: InterfaceAccount<'info, Mint>,
     #[account(
         init,
         payer = fee_payer,
@@ -234,7 +238,7 @@ pub struct CreateProposal<'info> {
         constraint = multisig.members.contains(&proposer.key()) @ ErrorCode::MemberNotPartOfFund
     )]
     pub proposer: Signer<'info>,
-    pub mint: Account<'info, Mint>,
+    pub mint: InterfaceAccount<'info, Mint>,
     /// CHECK: Validated via `proposed_to_account` in handler
     pub proposed_to_owner: UncheckedAccount<'info>,
     #[account(
@@ -305,7 +309,8 @@ pub struct SubmitAndExecute<'info> {
         constraint = multisig.members.contains(&submitter.key()) @ ErrorCode::MemberNotPartOfFund
     )]
     pub submitter: Signer<'info>,
-    pub mint: Account<'info, Mint>,
+    #[account(mut)]
+    pub mint: InterfaceAccount<'info, Mint>,
     /// CHECK: Validated via transaction.message_data.proposed_to_account
     pub proposed_to_owner: UncheckedAccount<'info>,
 
