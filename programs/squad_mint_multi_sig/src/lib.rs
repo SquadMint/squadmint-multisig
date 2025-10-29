@@ -1,12 +1,17 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
-    account_info::{next_account_info, AccountInfo},
+    account_info::{ next_account_info, AccountInfo },
     entrypoint::ProgramResult,
     ed25519_program,
     log::sol_log_compute_units,
     program::invoke,
     instruction::Instruction,
     pubkey::Pubkey,
+};
+
+use  anchor_spl::{
+    token::{ Mint, Token, TokenAccount, Transfer, transfer },
+    associated_token::AssociatedToken
 };
 
 declare_id!("BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz");
@@ -24,7 +29,7 @@ pub mod squad_mint_multi_sig {
 
     pub fn initialize(ctx: Context<Initialize>, account_handle: String) -> Result<()> {
         msg!("Greetings from: {:?}", ctx.program_id);
-        if account_handle.len() > SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE {
+        if account_handle.len() == 0 || account_handle.len() > SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE {
             return Err(error!(ErrorCode::HandleLenNotValid));
         }
         let fund = &mut ctx.accounts.multisig;
@@ -53,8 +58,9 @@ pub mod squad_mint_multi_sig {
         Ok(())
     }
 
-    // TODO: we will implement remove here
-    // Adding
+    // TODO: we will implement remove here, also add money to Tx
+    // when a user wants to join as an escrow revert to them in rejected
+    // must pass a joining ID account_handle-user_handle or UUID not sure
 
     pub fn create_proposal(ctx: Context<CreateProposal>,
                            amount: u64,
@@ -63,11 +69,14 @@ pub mod squad_mint_multi_sig {
         let transaction = &mut ctx.accounts.transaction;
         let multisig = &mut ctx.accounts.multisig;
         let proposer = ctx.accounts.proposer.key();
-
+        require_keys_eq!(
+            ctx.accounts.proposed_to_owner.key(),
+            proposed_to_account,
+            ErrorCode::InvalidDestinationOwner
+         );
         require!(!multisig.has_active_vote, ErrorCode::CanOnlyInitOneVoteAtATime);
         require!(multisig.members.contains(&proposer), ErrorCode::MemberNotPartOfFund);
-
-        // Would you like to check the amount balance vs what we have here as well
+        require!(ctx.accounts.multisig_ata.amount >= amount, ErrorCode::InsufficientFunds);
 
         transaction.belongs_to_squad_mint_fund = multisig.key();
         transaction.message_data = TransactionMessage {
@@ -92,13 +101,19 @@ pub mod squad_mint_multi_sig {
     pub fn submit_and_execute(ctx: Context<SubmitAndExecute>,
                               vote: bool) -> Result<()> {
         msg!("Initiate vote to transfer, called from: {:?}", ctx.program_id);
-
+        let multisig_key = ctx.accounts.multisig.key(); // Cache - something could be done better still learning Rust
         let transaction = &mut ctx.accounts.transaction;
         let multisig = &mut ctx.accounts.multisig;
+
         require!(multisig.has_active_vote, ErrorCode::HasNoActiveVote);
         require!(!transaction.did_meet_threshold, ErrorCode::AlreadyExecuted);
         require!(transaction.message_data.nonce == multisig.master_nonce, ErrorCode::AlreadyExecutedInvalidNonce);
         require!(!multisig.members.is_empty(), ErrorCode::HasNoActiveVote);
+        require_keys_eq!(
+            ctx.accounts.proposed_to_owner.key(),
+            transaction.message_data.proposed_to_account,
+            ErrorCode::InvalidDestinationOwner
+        );
 
         let submitter_has_voted = transaction.executors.contains(&ctx.accounts.submitter.key());
         if !submitter_has_voted {
@@ -106,7 +121,7 @@ pub mod squad_mint_multi_sig {
             require!(!transaction.executors.contains(&ctx.accounts.submitter.key()), ErrorCode::CannotVoteTwice);
             transaction.executors.push(ctx.accounts.submitter.key());
             transaction.votes.push(vote);
-            msg!("Has Voted {} to Fund {}", &ctx.accounts.submitter.key(), multisig.key())
+            msg!("Has Voted {} to Fund {}. The vote: {}", &ctx.accounts.submitter.key(), multisig.key(), if vote { "YES" } else { "NO" })
         }
 
         let yes_votes = transaction.votes.iter().filter(|&&v| v).count();
@@ -115,7 +130,6 @@ pub mod squad_mint_multi_sig {
         let yes_percentage = (yes_votes as f64 / total_members as f64) * 100.0f64;
         let no_percentage = (no_votes as f64 / total_members as f64) * 100.0f64;
         let threshold = SquadMintFund::SQUAD_MINT_THRESHOLD_PERCENTAGE;
-
         if yes_percentage >= threshold || no_percentage >= 50.0f64 {
             transaction.did_meet_threshold = yes_percentage >= threshold;
             multisig.has_active_vote = false;
@@ -124,7 +138,29 @@ pub mod squad_mint_multi_sig {
                 .checked_add(1)
                 .ok_or(ErrorCode::NonceOverflow)?;
             if yes_percentage >= threshold {
-                msg!("Transfer funds");
+                let amount = transaction.message_data.amount;
+                require!(ctx.accounts.multisig_ata.amount >= amount, ErrorCode::InsufficientFunds);
+
+                let seeds: &[&[u8]; 3] = &[
+                    b"token_vault".as_ref(),
+                    multisig_key.as_ref(),
+                    &[ctx.bumps.multisig_ata],
+                ];
+                let signer_seeds: &[&[&[u8]]; 1] = &[&seeds[..]];
+
+                let cpi_accounts = Transfer {
+                    from: ctx.accounts.multisig_ata.to_account_info(),
+                    to: ctx.accounts.proposed_to_ata.to_account_info(),
+                    authority: ctx.accounts.multisig.to_account_info(),
+                };
+                let cpi_ctx = CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    cpi_accounts,
+                    signer_seeds,
+                );
+                transfer(cpi_ctx, amount)?;
+
+                msg!("TRANSFERRED {} to {}", amount, transaction.message_data.proposed_to_account);
             }
             msg!("Threshold met , Exiting transaction {}. Submitter: {}", transaction.key(), ctx.accounts.submitter.key());
             sol_log_compute_units();
@@ -153,6 +189,20 @@ pub struct Initialize<'info> {
     pub multisig_owner: Signer<'info>,
     #[account(mut)]
     pub fee_payer: Signer<'info>,
+    pub mint: Account<'info, Mint>,
+    #[account(
+        init,
+        payer = fee_payer,
+        seeds = [b"token_vault", multisig.key().as_ref()],
+        bump,
+        token::mint = mint,
+        token::authority = multisig
+    )]
+    pub multisig_ata: Account<'info, TokenAccount>,
+
+    // PROGRAMS
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
@@ -160,7 +210,7 @@ pub struct Initialize<'info> {
 #[derive(Default, Debug)]
 pub struct SquadMintFund {
     owner: Pubkey,     // This is the person that init creating this fund he will soon add contributors
-    account_handle: String,
+    account_handle: String, // convert to [u8; 15]
     has_active_vote: bool,
     is_private_group: bool,
     members: Vec<Pubkey>,
@@ -184,6 +234,28 @@ pub struct CreateProposal<'info> {
         constraint = multisig.members.contains(&proposer.key()) @ ErrorCode::MemberNotPartOfFund
     )]
     pub proposer: Signer<'info>,
+    pub mint: Account<'info, Mint>,
+    /// CHECK: Validated via `proposed_to_account` in handler
+    pub proposed_to_owner: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        seeds = [b"token_vault", multisig.key().as_ref()],
+        bump,
+        token::mint = mint,
+        token::authority = multisig
+    )]
+    pub multisig_ata: Account<'info, TokenAccount>,
+    #[account(
+        init_if_needed,
+        payer = fee_payer,
+        associated_token::mint = mint,
+        associated_token::authority = proposed_to_owner
+    )]
+    pub proposed_to_ata: Account<'info, TokenAccount>,
+
+    // Programs
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
@@ -233,6 +305,30 @@ pub struct SubmitAndExecute<'info> {
         constraint = multisig.members.contains(&submitter.key()) @ ErrorCode::MemberNotPartOfFund
     )]
     pub submitter: Signer<'info>,
+    pub mint: Account<'info, Mint>,
+    /// CHECK: Validated via transaction.message_data.proposed_to_account
+    pub proposed_to_owner: UncheckedAccount<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"token_vault", multisig.key().as_ref()],
+        bump,
+        token::mint = mint,
+        token::authority = multisig
+    )]
+    pub multisig_ata: Account<'info, TokenAccount>,
+    #[account(
+        init_if_needed,
+        payer = fee_payer,
+        associated_token::mint = mint,
+        associated_token::authority = proposed_to_owner
+    )]
+    pub proposed_to_ata: Account<'info, TokenAccount>,
+
+    // Programs
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
 }
 
 impl SquadMintFund {
@@ -286,5 +382,7 @@ pub enum ErrorCode {
     InvalidSignature,
     InsufficientSignatures,
     NonceOverflow,
-    CannotVoteTwice
+    CannotVoteTwice,
+    InvalidDestinationOwner,
+    InsufficientFunds
 }
