@@ -9,12 +9,13 @@ import nacl from "tweetnacl";
 let chaiAsPromised: any;
 
 import {
-    checkAccountFieldsAreInitializedCorrectly,
+    checkAccountFieldsAreInitializedCorrectly, createFeePayerWallet, createTestMint,
     createWallet,
     findPDAForAuthority, findPDAForMultisigTransaction,
     getAllAccountsByAuthority,
     initializeAccount
 } from "./helper_function";
+import {PublicKey} from "@solana/web3.js";
 
 const program = anchor.workspace.SquadMintMultiSig as Program<SquadMintMultiSig>;
 const connection = anchor.getProvider().connection;
@@ -24,20 +25,23 @@ let walletOwnerAndCreator2: anchor.web3.Keypair;
 let memberOpenFundWallet: anchor.web3.Keypair;
 let memberOpenFundWallet2: anchor.web3.Keypair;
 let proposedToWallet: anchor.web3.Keypair;
+let testMint: { mintPubkey: PublicKey; tokenAccountPubkey: PublicKey }
 
 before(async () => {
   chaiAsPromised = await import("chai-as-promised");
   chai.use(chaiAsPromised.default);
-  memberOpenFundWallet = await createWallet(connection, 1);
-  proposedToWallet = await createWallet(connection, 1);
-  memberOpenFundWallet2 = await createWallet(connection, 2);
-  walletOwnerAndCreator = await createWallet(connection, 1);
-  walletOwnerAndCreator2 = await createWallet(connection, 1);
-  squadMintFeePayer = await createWallet(connection, 5);
+  testMint = await createTestMint(connection, squadMintFeePayer)
+  squadMintFeePayer = await createFeePayerWallet(connection, 5);
 
-  await initializeAccount(program, walletOwnerAndCreator, squadMintFeePayer, "openFundWallet")
-  await initializeAccount(program, walletOwnerAndCreator, squadMintFeePayer, "openFundWallet2")
-  await initializeAccount(program, walletOwnerAndCreator2, squadMintFeePayer, "someOtherFund")
+  memberOpenFundWallet = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer,  5);
+  proposedToWallet = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 5);
+  memberOpenFundWallet2 = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer,  2);
+  walletOwnerAndCreator = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer,  4);
+  walletOwnerAndCreator2 = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer,  5);
+
+  await initializeAccount(program, walletOwnerAndCreator, squadMintFeePayer, testMint.mintPubkey, "openFundWallet")
+  await initializeAccount(program, walletOwnerAndCreator, squadMintFeePayer, testMint.mintPubkey,"openFundWallet2")
+  await initializeAccount(program, walletOwnerAndCreator2, squadMintFeePayer, testMint.mintPubkey, "someOtherFund")
 })
 
 describe("SquadMint Multisig program tests", () => {
@@ -146,6 +150,8 @@ describe("SquadMint Multisig program tests", () => {
 
     expect(addMember).to.be.rejectedWith("This member already exists in this group");
   });
+
+  // WE NEED TO FUND the multisig ATA
 
   // TODO: test if we can fit 15 pubkeys
 

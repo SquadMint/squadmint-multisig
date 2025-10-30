@@ -11,11 +11,12 @@ use anchor_lang::solana_program::{
 
 use anchor_spl::{
     associated_token::AssociatedToken,
-    token::{Token, TokenAccount, Transfer, transfer},
+    token::{Token, TokenAccount, Transfer, transfer, },
 };
 
 
 use anchor_spl::token_interface::{TokenInterface, Mint};
+
 
 
 declare_id!("BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz");
@@ -105,7 +106,9 @@ pub mod squad_mint_multi_sig {
     pub fn submit_and_execute(ctx: Context<SubmitAndExecute>,
                               vote: bool) -> Result<()> {
         msg!("Initiate vote to transfer, called from: {:?}", ctx.program_id);
-        let multisig_key = ctx.accounts.multisig.key(); // Cache - something could be done better still learning Rust
+        let multisig_owner_key = ctx.accounts.multisig.owner.key(); // Cache - something could be done better still learning Rust
+        // let account_handle = &ctx.accounts.multisig.account_handle; // Cache - something could be done better still learning Rust
+
         let transaction = &mut ctx.accounts.transaction;
         let multisig = &mut ctx.accounts.multisig;
 
@@ -145,8 +148,8 @@ pub mod squad_mint_multi_sig {
                 let amount = transaction.message_data.amount;
                 require!(ctx.accounts.multisig_ata.amount >= amount, ErrorCode::InsufficientFunds);
                 let seeds: &[&[u8]; 3] = &[
-                    b"token_vault".as_ref(),
-                    multisig_key.as_ref(),
+                    multisig.account_handle.as_bytes(),
+                    multisig_owner_key.as_ref(),
                     &[ctx.bumps.multisig_ata],
                 ];
                 let signer_seeds: &[&[&[u8]]; 1] = &[&seeds[..]];
@@ -154,7 +157,7 @@ pub mod squad_mint_multi_sig {
                 let cpi_accounts = Transfer {
                     from: ctx.accounts.multisig_ata.to_account_info(),
                     to: ctx.accounts.proposed_to_ata.to_account_info(),
-                    authority: ctx.accounts.multisig.to_account_info(),
+                    authority: multisig.to_account_info(),
                 };
                 let cpi_ctx = CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
@@ -192,12 +195,11 @@ pub struct Initialize<'info> {
     pub multisig_owner: Signer<'info>,
     #[account(mut)]
     pub fee_payer: Signer<'info>,
-    #[account(mut)]
     pub mint: InterfaceAccount<'info, Mint>,
     #[account(
         init,
         payer = fee_payer,
-        seeds = [b"token_vault", multisig.key().as_ref()],
+        seeds = [account_handle.as_bytes(), multisig_owner.key().as_ref()],
         bump,
         token::mint = mint,
         token::authority = multisig
@@ -243,7 +245,7 @@ pub struct CreateProposal<'info> {
     pub proposed_to_owner: UncheckedAccount<'info>,
     #[account(
         mut,
-        seeds = [b"token_vault", multisig.key().as_ref()],
+        seeds = [multisig.account_handle.as_bytes(), multisig.owner.key().as_ref()],
         bump,
         token::mint = mint,
         token::authority = multisig
@@ -309,14 +311,13 @@ pub struct SubmitAndExecute<'info> {
         constraint = multisig.members.contains(&submitter.key()) @ ErrorCode::MemberNotPartOfFund
     )]
     pub submitter: Signer<'info>,
-    #[account(mut)]
     pub mint: InterfaceAccount<'info, Mint>,
     /// CHECK: Validated via transaction.message_data.proposed_to_account
     pub proposed_to_owner: UncheckedAccount<'info>,
-
+    // [account_handle.as_bytes(), multisig_owner.key().as_ref()]
     #[account(
         mut,
-        seeds = [b"token_vault", multisig.key().as_ref()],
+        seeds = [multisig.account_handle.as_bytes(), multisig.key().as_ref()],
         bump,
         token::mint = mint,
         token::authority = multisig

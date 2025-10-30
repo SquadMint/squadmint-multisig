@@ -22,10 +22,16 @@ Run Local Validator
 solana-test-validator
 ```
 
-## Test
+## Test using solana-test-validator 
 
 ```sh
 anchor test  --skip-local-validator
+```
+
+## Get Program Rent
+
+```sh
+solana rent $(stat -f%z target/deploy/squad_mint_multi_sig.so)
 ```
 
 ### Credits
