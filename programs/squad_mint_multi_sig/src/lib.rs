@@ -108,8 +108,6 @@ pub mod squad_mint_multi_sig {
     pub fn submit_and_execute(ctx: Context<SubmitAndExecute>,
                               vote: bool) -> Result<()> {
         msg!("Initiate vote to transfer, called from: {:?}", ctx.program_id);
-        let multisig_key = ctx.accounts.multisig.key(); // Cache - something could be done better still learning Rust
-        // let account_handle = &ctx.accounts.multisig.account_handle; // Cache - something could be done better still learning Rust
 
         let transaction = &mut ctx.accounts.transaction;
         let multisig = &mut ctx.accounts.multisig;
@@ -127,6 +125,31 @@ pub mod squad_mint_multi_sig {
         require_keys_eq!(
             proposed_to_ata,
             ctx.accounts.proposed_to_ata.key(),
+            ErrorCode::InvalidDestinationOwner
+        );
+        let (expected_multisig_ata, expected_bump) = Pubkey::find_program_address(
+            &[b"token_vault", multisig.key().as_ref()],
+            ctx.program_id,
+        );
+        require_keys_eq!(
+            expected_multisig_ata,
+            ctx.accounts.multisig_ata.key(),
+            ErrorCode::InvalidDestinationOwner
+        );
+        require!(
+            expected_bump == ctx.bumps.multisig_ata,
+            ErrorCode::InvalidDestinationOwner
+        );
+        let (gen_multisig_key, bump) = Pubkey::find_program_address(
+            &[
+                multisig.account_handle.as_bytes(),
+                multisig.owner.key().as_ref(),
+            ],
+            ctx.program_id,
+        );
+        require_keys_eq!(
+            gen_multisig_key.key(),
+            multisig.key(),
             ErrorCode::InvalidDestinationOwner
         );
 
@@ -154,15 +177,17 @@ pub mod squad_mint_multi_sig {
                 .checked_add(1)
                 .ok_or(ErrorCode::NonceOverflow)?;
             if yes_percentage >= threshold {
-                msg!("Attempting to send funds to {:?} and multisig Key: {:?}", ctx.accounts.proposed_to_ata.key(), multisig_key.key() );
+                msg!("Attempting to send funds to {:?} and multisig Key: {:?}", ctx.accounts.proposed_to_ata.key(), multisig.key() );
                 let amount = transaction.message_data.amount;
                 require!(ctx.accounts.multisig_ata.amount >= amount, ErrorCode::InsufficientFunds);
-                let seeds: &[&[u8]; 3] = &[
-                    b"token_vault",
-                    multisig_key.as_ref(),
-                    &[ctx.bumps.multisig_ata]
+                let multisig_owner_key = multisig.owner.key();
+                let multisig_seeds = &[
+                    multisig.account_handle.as_bytes(),
+                    multisig_owner_key.as_ref(),
+                    &[bump]
                 ];
-                let signer_seeds = &[&seeds[..]];
+
+                let signer_seeds = &[&multisig_seeds[..]];
 
                 let cpi_accounts = Transfer {
                     from: ctx.accounts.multisig_ata.to_account_info(),

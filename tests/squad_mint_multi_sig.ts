@@ -76,8 +76,6 @@ describe("SquadMint Multisig program tests", () => {
     await checkAccountFieldsAreInitializedCorrectly(program, connection, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet");
     await checkAccountFieldsAreInitializedCorrectly(program, connection, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet2");
     await checkAccountFieldsAreInitializedCorrectly(program, connection, walletOwnerAndCreator2.keyPair.publicKey, "someOtherFund");
-
-
   });
 
     it("Check we can mint to PDA ATA - checking setup", async () => {
