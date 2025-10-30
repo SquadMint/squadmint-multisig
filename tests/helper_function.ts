@@ -2,10 +2,48 @@ import * as anchor from "@coral-xyz/anchor";
 import {BN, Program, Wallet} from "@coral-xyz/anchor";
 import { SquadMintMultiSig } from "../target/types/squad_mint_multi_sig";
 import {expect} from "chai";
+import {
+    Account,
+    ASSOCIATED_TOKEN_PROGRAM_ID, createMint, getAccount, getAssociatedTokenAddress,
+    getOrCreateAssociatedTokenAccount, mintTo, TOKEN_PROGRAM_ID, transfer
+} from "@solana/spl-token";
+import {Connection} from "@solana/web3.js";
 
 const { utf8 } = anchor.utils.bytes
+const decimals = 6
 /// Creates wallet and adds this blockchain.
-const createWallet = async (connection: anchor.web3.Connection, funds: number): Promise<anchor.web3.Keypair> => {
+const createWallet = async (connection: anchor.web3.Connection, mintPubkey: anchor.web3.PublicKey, mintAuthority: anchor.web3.Keypair,  funds: number): Promise<{ keyPair: anchor.web3.Keypair, ataAddress: Account  }> => {
+    const wallet = anchor.web3.Keypair.generate();
+    // wait for confirmation
+
+    const userATA: Account = await getOrCreateAssociatedTokenAccount(
+        connection,
+        mintAuthority,
+        mintPubkey,
+        wallet.publicKey
+    );
+
+    await mintTo(
+        connection,
+        mintAuthority,         // payer for transaction
+        mintPubkey,            // existing mint
+        userATA.address,       // destination
+        mintAuthority,         // mint authority
+        10 ** decimals * funds
+    );
+
+    const userTokenAccount = await getAccount(connection, userATA.address);
+    const balance = Number(userTokenAccount.amount) / 10 ** decimals;
+
+    if (balance < funds) {
+        throw new Error(`Token mint failed — balance is ${balance}, expected ${funds}`);
+    }
+    const result =  {keyPair: wallet, ataAddress: userATA }
+    console.log("EXIT CREATE AND FUND ATA ACCOUNT 🔥: " + result.keyPair.publicKey.toBase58() + " ATA: " + result.ataAddress.address + " Mint " + mintPubkey.toBase58());
+    return result
+}
+
+const createFeePayerWallet = async (connection: anchor.web3.Connection, funds: number): Promise<anchor.web3.Keypair> => {
     const wallet = anchor.web3.Keypair.generate();
     const tx = await connection.requestAirdrop(wallet.publicKey, anchor.web3.LAMPORTS_PER_SOL * funds);
     console.log("✅ Airdrop"+ " wallet: " + wallet.publicKey.toBase58() + " TX:" + tx)
@@ -22,7 +60,7 @@ const createWallet = async (connection: anchor.web3.Connection, funds: number): 
         throw new Error('Balance amount exceeds ' + "target network airdrop limit");
     }
 
-    console.log("EXIT CREATE AND FUND ACCOUNT 🔥")
+    console.log("EXIT CREATE AND Fee Payer FUND ACCOUNT 🔥")
     return wallet
 }
 
@@ -32,6 +70,27 @@ const findPDAForAuthority = async (programId: anchor.web3.PublicKey,
     const [pda, _canonicalBump] = await anchor.web3.PublicKey.findProgramAddressSync([utf8.encode(walletHandle), authority.toBytes()], programId);
     return pda;
 }
+
+const findATAForPDAForAuthority = async (
+    pda: anchor.web3.PublicKey,
+    mint: anchor.web3.PublicKey,
+): Promise<anchor.web3.PublicKey> => {
+    const ata = await getAssociatedTokenAddress(
+        mint,
+        pda,
+        true,
+    );
+
+    return ata;
+};
+
+const findATAForPDAForAuthority2 = async (
+    programId: anchor.web3.PublicKey,
+    pda: anchor.web3.PublicKey,
+): Promise<anchor.web3.PublicKey> => {
+    const [pda2, _canonicalBump] = await anchor.web3.PublicKey.findProgramAddressSync([utf8.encode("token_vault"), pda.toBytes()], programId);
+    return pda2;
+};
 
 const findPDAForMultisigTransaction = async (
     programId: anchor.web3.PublicKey,
@@ -55,16 +114,23 @@ const findPDAForMultisigTransaction = async (
 const initializeAccount = async (program: Program<SquadMintMultiSig>,
                                  owner: anchor.web3.Keypair,
                                  squadMintFeePayer: anchor.web3.Keypair,
+                                 mint: anchor.web3.PublicKey,
                                  walletHandle: string): Promise<anchor.web3.PublicKey> => {
     // const accountKeypair = anchor.web3.Keypair.generate();
     const pda = await findPDAForAuthority(program.programId, owner.publicKey, walletHandle);
-    console.log("🦾️ Found PDA on our Client for Wallet:  " + walletHandle + " PDA: "  + pda.toBase58() + "  Authority: " + owner.publicKey.toBase58())
+    // const pdaATA = await findATAForPDAForAuthority(pda, mint)
+    const pdaATA = await findATAForPDAForAuthority2(program.programId, pda)
+    console.log("🦾️ Found PDA on our Client for Wallet:  " + walletHandle + " PDA: "  + pda.toBase58() + "  Authority: " + owner.publicKey.toBase58() + " PDA ATA:" + pdaATA + " mint " + mint.toBase58())
 
     await program.methods.initialize(walletHandle)
         .accounts({
-            multisig: pda,
             multisigOwner: owner.publicKey,
             feePayer: squadMintFeePayer.publicKey,
+            multisig: pda,
+            multisigAta: pdaATA,
+            mint: mint,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId,
         })
         .signers([owner, squadMintFeePayer])
@@ -83,11 +149,13 @@ const getAllAccountsByAuthority = async (
 // Helper function with callback
 const checkAccountFieldsAreInitializedCorrectly = async (
     program: Program<SquadMintMultiSig>,
+    connection: Connection,
     walletOwner: anchor.web3.PublicKey,
     accountHandle: string,
     expectedMasterNonce: number = 0
 ) => {
     const pda = await findPDAForAuthority(program.programId, walletOwner, accountHandle);
+    const ata = await findATAForPDAForAuthority2(program.programId, pda);
     const fund = await program.account.squadMintFund.fetch(pda);
 
     expect(fund.owner.toBase58()).to.equal(walletOwner.toBase58());
@@ -98,7 +166,60 @@ const checkAccountFieldsAreInitializedCorrectly = async (
     expect(fund.members[0].toBase58()).to.equal(walletOwner.toBase58());
     expect(fund.masterNonce.eq(new BN(expectedMasterNonce))).to.be.true;
 
+    const userTokenAccount = await getAccount(connection, ata);
+    expect(userTokenAccount.amount).to.equal(BigInt(0));
+
     return fund;
+};
+ async function createTestMint(
+    connection: anchor.web3.Connection,
+    payer: anchor.web3.Keypair,
+) {
+    // Create a new mint
+    const mintPubkey = await createMint(
+        connection,
+        payer,        // payer for transaction & rent
+        payer.publicKey,        // mint authority
+        payer.publicKey,        // freeze authority (optional)
+        decimals
+    );
+
+    const tokenAccount = await getOrCreateAssociatedTokenAccount(
+        connection,
+        payer,
+        mintPubkey,
+        payer.publicKey
+    );
+
+    console.log("Test Mint:", mintPubkey.toBase58());
+    console.log("Token Account:", tokenAccount.address.toBase58());
+
+    return {
+        mintPubkey,
+        tokenAccountPubkey: tokenAccount.address
+    };
+}
+
+ const transferTokens = async (
+    connection: anchor.web3.Connection,
+    payer: anchor.web3.Keypair,
+    sourceATA: anchor.web3.PublicKey,
+    destinationATA: anchor.web3.PublicKey,
+    owner: anchor.web3.Keypair,
+    amount: number
+) => {
+    const txSignature = await transfer(
+        connection,
+        payer,           // payer for transaction
+        sourceATA,       // source token account
+        destinationATA,  // destination token account
+        owner,           // owner of source ATA
+        10 ** decimals * amount
+    );
+
+    console.log(`✅ Transferred ${amount} tokens`);
+    console.log(`Transaction signature: ${txSignature}`);
+    return txSignature;
 };
 
 // const fetchAccount = async (program: Program<HelloWorld>, authority: anchor.web3.PublicKey) => {
@@ -111,5 +232,11 @@ export {
     getAllAccountsByAuthority,
     findPDAForAuthority,
     checkAccountFieldsAreInitializedCorrectly,
-    findPDAForMultisigTransaction
+    findPDAForMultisigTransaction,
+    createTestMint,
+    createFeePayerWallet,
+    transferTokens,
+    findATAForPDAForAuthority2,
+    decimals,
+    findATAForPDAForAuthority
 };
