@@ -12,6 +12,8 @@ use anchor_lang::solana_program::{
 use anchor_spl::{
     token::{Transfer, transfer },
 };
+use anchor_spl::associated_token::get_associated_token_address;
+
 
 
 use anchor_spl::associated_token::AssociatedToken;
@@ -121,6 +123,12 @@ pub mod squad_mint_multi_sig {
             transaction.message_data.proposed_to_account,
             ErrorCode::InvalidDestinationOwner
         );
+        let proposed_to_ata: Pubkey = get_associated_token_address(&transaction.message_data.proposed_to_account, &ctx.accounts.mint.key());
+        require_keys_eq!(
+            proposed_to_ata,
+            ctx.accounts.proposed_to_ata.key(),
+            ErrorCode::InvalidDestinationOwner
+        );
 
         let submitter_has_voted = transaction.executors.contains(&ctx.accounts.submitter.key());
         if !submitter_has_voted {
@@ -128,7 +136,7 @@ pub mod squad_mint_multi_sig {
             require!(!transaction.executors.contains(&ctx.accounts.submitter.key()), ErrorCode::CannotVoteTwice);
             transaction.executors.push(ctx.accounts.submitter.key());
             transaction.votes.push(vote);
-            msg!("Has Voted {} to Fund {}. The vote: {}", &ctx.accounts.submitter.key(), multisig.key(), if vote { "YES" } else { "NO" })
+            msg!("Has Voted {} on Fund {} to Fund {}. The vote: {}", &ctx.accounts.submitter.key(), multisig.key(), transaction.message_data.proposed_to_account.key() , if vote { "YES" } else { "NO" })
         }
 
         let yes_votes = transaction.votes.iter().filter(|&&v| v).count();
@@ -138,6 +146,7 @@ pub mod squad_mint_multi_sig {
         let no_percentage = (no_votes as f64 / total_members as f64) * 100.0f64;
         let threshold = SquadMintFund::SQUAD_MINT_THRESHOLD_PERCENTAGE;
         if yes_percentage >= threshold || no_percentage >= 50.0f64 {
+            msg!("threshold met closing proposal on exit");
             transaction.did_meet_threshold = yes_percentage >= threshold;
             multisig.has_active_vote = false;
             multisig.master_nonce = multisig
@@ -145,6 +154,7 @@ pub mod squad_mint_multi_sig {
                 .checked_add(1)
                 .ok_or(ErrorCode::NonceOverflow)?;
             if yes_percentage >= threshold {
+                msg!("Attempting to send funds to {:?} and multisig Key: {:?}", ctx.accounts.proposed_to_ata.key(), multisig_key.key() );
                 let amount = transaction.message_data.amount;
                 require!(ctx.accounts.multisig_ata.amount >= amount, ErrorCode::InsufficientFunds);
                 let seeds: &[&[u8]; 3] = &[
@@ -329,7 +339,8 @@ pub struct SubmitAndExecute<'info> {
         init_if_needed,
         payer = fee_payer,
         associated_token::mint = mint,
-        associated_token::authority = proposed_to_owner
+        associated_token::authority = proposed_to_owner,
+        associated_token::token_program = token_program
     )]
     pub proposed_to_ata: InterfaceAccount<'info, TokenAccount>,
     pub mint: InterfaceAccount<'info, Mint>,

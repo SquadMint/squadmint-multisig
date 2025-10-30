@@ -238,5 +238,5 @@ export {
     transferTokens,
     findATAForPDAForAuthority2,
     decimals,
-    // findATAForPDAForAuthority
+    findATAForPDAForAuthority
 };
