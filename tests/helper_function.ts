@@ -3,6 +3,7 @@ import {BN, Program, Wallet} from "@coral-xyz/anchor";
 import { SquadMintMultiSig } from "../target/types/squad_mint_multi_sig";
 import {expect} from "chai";
 import {
+    Account,
     ASSOCIATED_TOKEN_PROGRAM_ID, createMint, getAccount, getAssociatedTokenAddress,
     getOrCreateAssociatedTokenAccount, mintTo, TOKEN_PROGRAM_ID, transfer
 } from "@solana/spl-token";
@@ -10,11 +11,11 @@ import {
 const { utf8 } = anchor.utils.bytes
 const decimals = 6
 /// Creates wallet and adds this blockchain.
-const createWallet = async (connection: anchor.web3.Connection, mintPubkey: anchor.web3.PublicKey, mintAuthority: anchor.web3.Keypair,  funds: number): Promise<anchor.web3.Keypair> => {
+const createWallet = async (connection: anchor.web3.Connection, mintPubkey: anchor.web3.PublicKey, mintAuthority: anchor.web3.Keypair,  funds: number): Promise<{ keyPair: anchor.web3.Keypair, ataAddress: Account  }> => {
     const wallet = anchor.web3.Keypair.generate();
     // wait for confirmation
 
-    const userATA = await getOrCreateAssociatedTokenAccount(
+    const userATA: Account = await getOrCreateAssociatedTokenAccount(
         connection,
         mintAuthority,
         mintPubkey,
@@ -37,7 +38,7 @@ const createWallet = async (connection: anchor.web3.Connection, mintPubkey: anch
         throw new Error(`Token mint failed — balance is ${balance}, expected ${funds}`);
     }
     console.log("EXIT CREATE AND FUND ATA ACCOUNT 🔥")
-    return wallet
+    return {keyPair: wallet, ataAddress: userATA }
 }
 
 const createFeePayerWallet = async (connection: anchor.web3.Connection, funds: number): Promise<anchor.web3.Keypair> => {
@@ -72,7 +73,6 @@ const findATAForPDAForAuthority = async (
     pda: anchor.web3.PublicKey,
     mint: anchor.web3.PublicKey
 ): Promise<anchor.web3.PublicKey> => {
-
     const ata = await getAssociatedTokenAddress(
         mint,
         pda,
@@ -183,7 +183,7 @@ const checkAccountFieldsAreInitializedCorrectly = async (
     };
 }
 
-export const transferTokens = async (
+ const transferTokens = async (
     connection: anchor.web3.Connection,
     payer: anchor.web3.Keypair,
     sourceATA: anchor.web3.PublicKey,
@@ -205,8 +205,6 @@ export const transferTokens = async (
     return txSignature;
 };
 
-
-
 // const fetchAccount = async (program: Program<HelloWorld>, authority: anchor.web3.PublicKey) => {
 //     return await program.account.myAccount.fetch(await findPDAForAuthority(program.programId, authority))
 // }
@@ -219,5 +217,7 @@ export {
     checkAccountFieldsAreInitializedCorrectly,
     findPDAForMultisigTransaction,
     createTestMint,
-    createFeePayerWallet
+    createFeePayerWallet,
+    transferTokens,
+    findATAForPDAForAuthority, decimals
 };
