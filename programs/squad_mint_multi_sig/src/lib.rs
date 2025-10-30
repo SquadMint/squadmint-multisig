@@ -10,12 +10,12 @@ use anchor_lang::solana_program::{
 };
 
 use anchor_spl::{
-    associated_token::AssociatedToken,
-    token::{Token, TokenAccount, Transfer, transfer, },
+    token::{Transfer, transfer },
 };
 
 
-use anchor_spl::token_interface::{TokenInterface, Mint};
+use anchor_spl::associated_token::AssociatedToken;
+use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
 
 
@@ -106,7 +106,7 @@ pub mod squad_mint_multi_sig {
     pub fn submit_and_execute(ctx: Context<SubmitAndExecute>,
                               vote: bool) -> Result<()> {
         msg!("Initiate vote to transfer, called from: {:?}", ctx.program_id);
-        let multisig_owner_key = ctx.accounts.multisig.owner.key(); // Cache - something could be done better still learning Rust
+        let multisig_key = ctx.accounts.multisig.key(); // Cache - something could be done better still learning Rust
         // let account_handle = &ctx.accounts.multisig.account_handle; // Cache - something could be done better still learning Rust
 
         let transaction = &mut ctx.accounts.transaction;
@@ -148,11 +148,11 @@ pub mod squad_mint_multi_sig {
                 let amount = transaction.message_data.amount;
                 require!(ctx.accounts.multisig_ata.amount >= amount, ErrorCode::InsufficientFunds);
                 let seeds: &[&[u8]; 3] = &[
-                    multisig.account_handle.as_bytes(),
-                    multisig_owner_key.as_ref(),
-                    &[ctx.bumps.multisig_ata],
+                    b"token_vault",
+                    multisig_key.as_ref(),
+                    &[ctx.bumps.multisig_ata]
                 ];
-                let signer_seeds: &[&[&[u8]]; 1] = &[&seeds[..]];
+                let signer_seeds = &[&seeds[..]];
 
                 let cpi_accounts = Transfer {
                     from: ctx.accounts.multisig_ata.to_account_info(),
@@ -183,6 +183,10 @@ pub mod squad_mint_multi_sig {
 #[derive(Accounts)]
 #[instruction(account_handle: String)]
 pub struct Initialize<'info> {
+    #[account(mut)]
+    pub fee_payer: Signer<'info>,
+    #[account(signer)]
+    pub multisig_owner: Signer<'info>,
     #[account(
         init,
         seeds = [account_handle.as_bytes(), multisig_owner.key().as_ref()],
@@ -191,23 +195,20 @@ pub struct Initialize<'info> {
         space = 8 + SquadMintFund::MAX_SIZE
     )]
     pub multisig: Account<'info, SquadMintFund>,
-    #[account(signer)]
-    pub multisig_owner: Signer<'info>,
-    #[account(mut)]
-    pub fee_payer: Signer<'info>,
     pub mint: InterfaceAccount<'info, Mint>,
     #[account(
         init,
         payer = fee_payer,
-        seeds = [account_handle.as_bytes(), multisig_owner.key().as_ref()],
+        seeds = [b"token_vault", multisig.key().as_ref()],
         bump,
         token::mint = mint,
-        token::authority = multisig
+        token::authority = multisig,
+        token::token_program = token_program,
     )]
-    pub multisig_ata: Account<'info, TokenAccount>,
+    pub multisig_ata: InterfaceAccount<'info, TokenAccount>,
 
     // PROGRAMS
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
@@ -245,22 +246,24 @@ pub struct CreateProposal<'info> {
     pub proposed_to_owner: UncheckedAccount<'info>,
     #[account(
         mut,
-        seeds = [multisig.account_handle.as_bytes(), multisig.owner.key().as_ref()],
+        seeds = [b"token_vault", multisig.key().as_ref()],
         bump,
         token::mint = mint,
-        token::authority = multisig
+        token::authority = multisig,
+        token::token_program = token_program
     )]
-    pub multisig_ata: Account<'info, TokenAccount>,
+    pub multisig_ata: InterfaceAccount<'info, TokenAccount>,
     #[account(
         init_if_needed,
         payer = fee_payer,
         associated_token::mint = mint,
-        associated_token::authority = proposed_to_owner
+        associated_token::authority = proposed_to_owner,
+        associated_token::token_program = token_program
     )]
-    pub proposed_to_ata: Account<'info, TokenAccount>,
+    pub proposed_to_ata: InterfaceAccount<'info, TokenAccount>,
 
     // Programs
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
@@ -311,28 +314,28 @@ pub struct SubmitAndExecute<'info> {
         constraint = multisig.members.contains(&submitter.key()) @ ErrorCode::MemberNotPartOfFund
     )]
     pub submitter: Signer<'info>,
-    pub mint: InterfaceAccount<'info, Mint>,
     /// CHECK: Validated via transaction.message_data.proposed_to_account
     pub proposed_to_owner: UncheckedAccount<'info>,
-    // [account_handle.as_bytes(), multisig_owner.key().as_ref()]
     #[account(
         mut,
-        seeds = [multisig.account_handle.as_bytes(), multisig.key().as_ref()],
+        seeds = [b"token_vault", multisig.key().as_ref()],
         bump,
         token::mint = mint,
-        token::authority = multisig
+        token::authority = multisig,
+        token::token_program = token_program
     )]
-    pub multisig_ata: Account<'info, TokenAccount>,
+    pub multisig_ata: InterfaceAccount<'info, TokenAccount>,
     #[account(
         init_if_needed,
         payer = fee_payer,
         associated_token::mint = mint,
         associated_token::authority = proposed_to_owner
     )]
-    pub proposed_to_ata: Account<'info, TokenAccount>,
+    pub proposed_to_ata: InterfaceAccount<'info, TokenAccount>,
+    pub mint: InterfaceAccount<'info, Mint>,
 
     // Programs
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }

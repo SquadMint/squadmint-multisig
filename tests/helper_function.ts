@@ -7,6 +7,7 @@ import {
     ASSOCIATED_TOKEN_PROGRAM_ID, createMint, getAccount, getAssociatedTokenAddress,
     getOrCreateAssociatedTokenAccount, mintTo, TOKEN_PROGRAM_ID, transfer
 } from "@solana/spl-token";
+import {Connection} from "@solana/web3.js";
 
 const { utf8 } = anchor.utils.bytes
 const decimals = 6
@@ -37,8 +38,9 @@ const createWallet = async (connection: anchor.web3.Connection, mintPubkey: anch
     if (balance < funds) {
         throw new Error(`Token mint failed — balance is ${balance}, expected ${funds}`);
     }
-    console.log("EXIT CREATE AND FUND ATA ACCOUNT 🔥")
-    return {keyPair: wallet, ataAddress: userATA }
+    const result =  {keyPair: wallet, ataAddress: userATA }
+    console.log("EXIT CREATE AND FUND ATA ACCOUNT 🔥: " + result.keyPair.publicKey.toBase58() + " ATA: " + result.ataAddress.address + " Mint " + mintPubkey.toBase58());
+    return result
 }
 
 const createFeePayerWallet = async (connection: anchor.web3.Connection, funds: number): Promise<anchor.web3.Keypair> => {
@@ -71,16 +73,25 @@ const findPDAForAuthority = async (programId: anchor.web3.PublicKey,
 
 const findATAForPDAForAuthority = async (
     pda: anchor.web3.PublicKey,
-    mint: anchor.web3.PublicKey
+    mint: anchor.web3.PublicKey,
 ): Promise<anchor.web3.PublicKey> => {
     const ata = await getAssociatedTokenAddress(
         mint,
         pda,
-        true
+        true,
     );
 
     return ata;
 };
+
+const findATAForPDAForAuthority2 = async (
+    programId: anchor.web3.PublicKey,
+    pda: anchor.web3.PublicKey,
+): Promise<anchor.web3.PublicKey> => {
+    const [pda2, _canonicalBump] = await anchor.web3.PublicKey.findProgramAddressSync([utf8.encode("token_vault"), pda.toBytes()], programId);
+    return pda2;
+};
+
 const findPDAForMultisigTransaction = async (
     programId: anchor.web3.PublicKey,
     multisigAuthority: anchor.web3.PublicKey,
@@ -107,16 +118,17 @@ const initializeAccount = async (program: Program<SquadMintMultiSig>,
                                  walletHandle: string): Promise<anchor.web3.PublicKey> => {
     // const accountKeypair = anchor.web3.Keypair.generate();
     const pda = await findPDAForAuthority(program.programId, owner.publicKey, walletHandle);
-    const pdaATA = findATAForPDAForAuthority(pda, mint)
-    console.log("🦾️ Found PDA on our Client for Wallet:  " + walletHandle + " PDA: "  + pda.toBase58() + "  Authority: " + owner.publicKey.toBase58())
+    // const pdaATA = await findATAForPDAForAuthority(pda, mint)
+    const pdaATA = await findATAForPDAForAuthority2(program.programId, pda)
+    console.log("🦾️ Found PDA on our Client for Wallet:  " + walletHandle + " PDA: "  + pda.toBase58() + "  Authority: " + owner.publicKey.toBase58() + " PDA ATA:" + pdaATA + " mint " + mint.toBase58())
 
     await program.methods.initialize(walletHandle)
         .accounts({
-            multisig: pda,
             multisigOwner: owner.publicKey,
             feePayer: squadMintFeePayer.publicKey,
-            mint: mint,
+            multisig: pda,
             multisigAta: pdaATA,
+            mint: mint,
             tokenProgram: TOKEN_PROGRAM_ID,
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId,
@@ -137,11 +149,13 @@ const getAllAccountsByAuthority = async (
 // Helper function with callback
 const checkAccountFieldsAreInitializedCorrectly = async (
     program: Program<SquadMintMultiSig>,
+    connection: Connection,
     walletOwner: anchor.web3.PublicKey,
     accountHandle: string,
     expectedMasterNonce: number = 0
 ) => {
     const pda = await findPDAForAuthority(program.programId, walletOwner, accountHandle);
+    const ata = await findATAForPDAForAuthority2(program.programId, pda);
     const fund = await program.account.squadMintFund.fetch(pda);
 
     expect(fund.owner.toBase58()).to.equal(walletOwner.toBase58());
@@ -151,6 +165,9 @@ const checkAccountFieldsAreInitializedCorrectly = async (
     expect(fund.members).to.have.lengthOf(1);
     expect(fund.members[0].toBase58()).to.equal(walletOwner.toBase58());
     expect(fund.masterNonce.eq(new BN(expectedMasterNonce))).to.be.true;
+
+    const userTokenAccount = await getAccount(connection, ata);
+    expect(userTokenAccount.amount).to.equal(BigInt(0));
 
     return fund;
 };
@@ -197,7 +214,7 @@ const checkAccountFieldsAreInitializedCorrectly = async (
         sourceATA,       // source token account
         destinationATA,  // destination token account
         owner,           // owner of source ATA
-        amount
+        10 ** decimals * amount
     );
 
     console.log(`✅ Transferred ${amount} tokens`);
@@ -219,5 +236,7 @@ export {
     createTestMint,
     createFeePayerWallet,
     transferTokens,
-    findATAForPDAForAuthority, decimals
+    findATAForPDAForAuthority2,
+    decimals,
+    // findATAForPDAForAuthority
 };

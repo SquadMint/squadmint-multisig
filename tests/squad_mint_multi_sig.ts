@@ -13,7 +13,7 @@ import {
     createFeePayerWallet,
     createTestMint,
     createWallet, decimals,
-    findATAForPDAForAuthority,
+    findATAForPDAForAuthority2,
     findPDAForAuthority,
     findPDAForMultisigTransaction,
     getAllAccountsByAuthority,
@@ -21,7 +21,13 @@ import {
 } from "./helper_function";
 
 import {PublicKey} from "@solana/web3.js";
-import {Account, getAccount, getAssociatedTokenAddress, getOrCreateAssociatedTokenAccount} from "@solana/spl-token";
+import {
+    Account, ASSOCIATED_TOKEN_PROGRAM_ID,
+    getAccount,
+    getAssociatedTokenAddress,
+    getOrCreateAssociatedTokenAccount, mintTo,
+    TOKEN_PROGRAM_ID
+} from "@solana/spl-token";
 
 const program = anchor.workspace.SquadMintMultiSig as Program<SquadMintMultiSig>;
 const connection = anchor.getProvider().connection;
@@ -36,8 +42,9 @@ let testMint: { mintPubkey: PublicKey; tokenAccountPubkey: PublicKey }
 before(async () => {
   chaiAsPromised = await import("chai-as-promised");
   chai.use(chaiAsPromised.default);
-  testMint = await createTestMint(connection, squadMintFeePayer)
-  squadMintFeePayer = await createFeePayerWallet(connection, 5);
+    squadMintFeePayer = await createFeePayerWallet(connection, 5);
+
+    testMint = await createTestMint(connection, squadMintFeePayer)
 
   memberOpenFundWallet = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer,  5);
   proposedToWallet = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 5);
@@ -66,21 +73,40 @@ describe("SquadMint Multisig program tests", () => {
 
     expect(accountWallet1Data.length).to.equal(2);
 
-    await checkAccountFieldsAreInitializedCorrectly(program, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet");
-    await checkAccountFieldsAreInitializedCorrectly(program, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet2");
-    await checkAccountFieldsAreInitializedCorrectly(program, walletOwnerAndCreator2.keyPair.publicKey, "someOtherFund");
+    await checkAccountFieldsAreInitializedCorrectly(program, connection, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet");
+    await checkAccountFieldsAreInitializedCorrectly(program, connection, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet2");
+    await checkAccountFieldsAreInitializedCorrectly(program, connection, walletOwnerAndCreator2.keyPair.publicKey, "someOtherFund");
+
+
   });
+
+    it("Check we can mint to PDA ATA - checking setup", async () => {
+        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet");
+        const ata = await findATAForPDAForAuthority2(program.programId, pda)
+
+        await mintTo(
+            connection,
+            squadMintFeePayer,
+            testMint.mintPubkey,
+            ata,
+            squadMintFeePayer,
+            10 ** decimals * 1
+        );
+
+        const userTokenAccount = await getAccount(connection, ata);
+        expect(userTokenAccount.amount).to.equal(BigInt(10 ** decimals * 1));
+    });
+
 
     it("Deposit USDC(decimal 6 token) to my multisig ATA", async () => {
         const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet");
-        const ata = await findATAForPDAForAuthority(pda, testMint.mintPubkey)
-        const amount = BigInt(Number(1) / 10 ** decimals);
+        const ata = await findATAForPDAForAuthority2(program.programId, pda)
         const userTokenAccount = await getAccount(connection, ata);
         const currentAmount = userTokenAccount.amount;
 
-        await transferTokens(connection, squadMintFeePayer, walletOwnerAndCreator.keyPair.publicKey, ata, walletOwnerAndCreator.keyPair, 2)
+        await transferTokens(connection, squadMintFeePayer, walletOwnerAndCreator.ataAddress.address, ata, walletOwnerAndCreator.keyPair, 2)
         const userTokenAccountUpdated = await getAccount(connection, ata);
-        expect(userTokenAccountUpdated.amount).to.equal(currentAmount + BigInt(2));
+        expect(userTokenAccountUpdated.amount).to.equal(currentAmount + BigInt(10 ** decimals * 2));
     });
 
   it("Add a new member correctly", async () => {
@@ -98,6 +124,8 @@ describe("SquadMint Multisig program tests", () => {
     expect(fund.members[1].toBase58()).to.equal(memberOpenFundWallet.keyPair.publicKey.toBase58());
   });
 
+
+
   it("try to add unInitialized member wallet to openFundWallet2", async () => {
     const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet2");
     let unInitializedMember = anchor.web3.Keypair.generate();
@@ -113,6 +141,53 @@ describe("SquadMint Multisig program tests", () => {
     expect(fund.members).to.have.lengthOf(2);
     expect(fund.members[1].toBase58()).to.equal(unInitializedMember.publicKey.toBase58());
   });
+
+    /// SKIP 1
+  // Taking too long will skip for now
+    it.skip("try to add 15 uninitialized member wallets to openFundWallet2", async () => {
+        const pda = await findPDAForAuthority(
+            program.programId,
+            walletOwnerAndCreator.keyPair.publicKey,
+            "openFundWallet2"
+        );
+
+        const members: anchor.web3.Keypair[] = [];
+
+        for (let i = 0; i < 13; i++) {
+            members.push(anchor.web3.Keypair.generate());
+        }
+
+        for (const member of members) {
+            await program.methods.addMember(member.publicKey)
+                .accounts({
+                    multisig: pda,
+                    multisigOwner: walletOwnerAndCreator.keyPair.publicKey
+                })
+                .signers([walletOwnerAndCreator.keyPair])
+                .rpc();
+        }
+
+        const fund = await program.account.squadMintFund.fetch(pda);
+        expect(fund.members).to.have.lengthOf(15);
+        for (let i = 0; i < members.length; i++) {
+            expect(fund.members[i + 2].toBase58()).to.equal(members[i].publicKey.toBase58());
+        }
+    });
+
+    /// SKIP 2
+    it.skip("try to add more than 15 uninitialized member wallets to openFundWallet2 should be rejected", async () => {
+        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet2");
+        let unInitializedMember = anchor.web3.Keypair.generate();
+        const addMember = program.methods.addMember(unInitializedMember.publicKey)
+            .accounts({
+                multisig: pda,
+                multisigOwner: walletOwnerAndCreator.keyPair.publicKey
+            })
+            .signers([walletOwnerAndCreator.keyPair])
+            .rpc()
+
+        expect(addMember).to.be.rejectedWith(/MaxMembersReached/);
+    });
 
   it("When adding unInitialized wallet and sign with a wallet that's not owner", async () => {
     const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet2");
@@ -170,12 +245,9 @@ describe("SquadMint Multisig program tests", () => {
     expect(addMember).to.be.rejectedWith("This member already exists in this group");
   });
 
-  // WE NEED TO FUND the multisig ATA
-
-  // TODO: test if we can fit 15 pubkeys
-
     it("We can successfully create a proposal", async () => {
         const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet");
+        const multisigAta = await findATAForPDAForAuthority2(program.programId, pda);
 
         const openFundWallet = await program.account.squadMintFund.fetch(pda);
         const transactionDataPDA = await findPDAForMultisigTransaction(
@@ -193,6 +265,12 @@ describe("SquadMint Multisig program tests", () => {
                             multisig: pda,
                             feePayer: squadMintFeePayer.publicKey,
                             proposer: memberOpenFundWallet.keyPair.publicKey,
+                            mint: testMint.mintPubkey,
+                            proposedToOwner: proposedToWallet.keyPair.publicKey,
+                            multisigAta: multisigAta,
+                            proposedToAta: proposedToWallet.ataAddress.address,
+                            tokenProgram: TOKEN_PROGRAM_ID,
+                            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
                             systemProgram: anchor.web3.SystemProgram.programId // can remove this
             })
             .signers([squadMintFeePayer, memberOpenFundWallet.keyPair])
@@ -214,9 +292,9 @@ describe("SquadMint Multisig program tests", () => {
             .to.equal(memberOpenFundWallet.keyPair.publicKey.toBase58());
     });
 
-
     it("Should reject when already have active proposal", async () => {
         const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet");
+        const multisigAta = await findATAForPDAForAuthority2(program.programId, pda);
 
         const openFundWallet = await program.account.squadMintFund.fetch(pda);
         const transactionDataPDA = await findPDAForMultisigTransaction(
@@ -239,7 +317,14 @@ describe("SquadMint Multisig program tests", () => {
                 multisig: pda,
                 feePayer: squadMintFeePayer.publicKey,
                 proposer: memberOpenFundWallet.keyPair.publicKey,
-                systemProgram: anchor.web3.SystemProgram.programId // can remove this
+                mint: testMint.mintPubkey,
+                proposedToOwner: proposedToWallet.keyPair.publicKey,
+                multisigAta: multisigAta,
+                proposedToAta: await findATAForPDAForAuthority(pda, proposedToWallet.keyPair.publicKey),
+                tokenProgram: TOKEN_PROGRAM_ID,
+                associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+                systemProgram: anchor.web3.SystemProgram.programId
+                // can remove this
             })
             .signers([squadMintFeePayer, memberOpenFundWallet.keyPair])
             .rpc();
@@ -259,6 +344,8 @@ describe("SquadMint Multisig program tests", () => {
             "openFundWallet",
             openFundWallet.masterNonce
         )
+        const multisigAta = await findATAForPDAForAuthority(pda, testMint.mintPubkey);
+
         console.log("🔥 This is the PDA of the new transaction " + transactionDataPDA.toBase58())
         let amount = new anchor.BN(1);
         let createRejectionProposal = program
@@ -268,6 +355,12 @@ describe("SquadMint Multisig program tests", () => {
                 multisig: pda,
                 feePayer: squadMintFeePayer.publicKey,
                 proposer: memberOpenFundWallet.keyPair.publicKey,
+                mint: testMint.mintPubkey,
+                proposedToOwner: proposedToWallet.keyPair.publicKey,
+                multisigAta: multisigAta,
+                proposedToAta: await findATAForPDAForAuthority(pda, proposedToWallet.keyPair.publicKey),
+                tokenProgram: TOKEN_PROGRAM_ID,
+                associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
                 systemProgram: anchor.web3.SystemProgram.programId // can remove this
             })
             .signers([squadMintFeePayer, unInitializedMember])
@@ -293,6 +386,7 @@ describe("SquadMint Multisig program tests", () => {
         expect(oFundTxProposal.messageData.nonce.eq(new BN(openFundWallet.masterNonce))).to.be.true;
         expect(oFundTxProposal.messageData.proposerAccount.toBase58())
             .to.equal(memberOpenFundWallet.keyPair.publicKey.toBase58());
+        const multisigAta = await findATAForPDAForAuthority(pda, testMint.mintPubkey);
 
         // wallet owner approves which should be second from the member who proposed
         await program.methods.submitAndExecute(true)
@@ -301,10 +395,16 @@ describe("SquadMint Multisig program tests", () => {
                 multisig: pda,
                 feePayer: squadMintFeePayer.publicKey,
                 submitter: walletOwnerAndCreator.keyPair.publicKey,
+                mint: testMint.mintPubkey,
+                proposedToOwner: oFundTxProposal.messageData.proposedToAccount,
+                multisigAta: multisigAta,
+                proposedToAta: await findATAForPDAForAuthority(pda, proposedToWallet.keyPair.publicKey),
+                tokenProgram: TOKEN_PROGRAM_ID,
+                associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+                systemProgram: anchor.web3.SystemProgram.programId
             })
             .signers([squadMintFeePayer, walletOwnerAndCreator.keyPair])
             .rpc()
-
 
         const multisig = await program.account.squadMintFund.fetch(pda);
         const fundTx = await program.account.transaction.fetch(transactionDataPDA);
@@ -328,12 +428,17 @@ describe("SquadMint Multisig program tests", () => {
 
     it("Reject transfer when NO vote is 51% or more", async () => {
         const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator2.keyPair.publicKey, "someOtherFund");
+        const multisigAta = await findATAForPDAForAuthority(pda, testMint.mintPubkey);
+
         const openFundWallet = await program.account.squadMintFund.fetch(pda);
         const transactionDataPDA = await findPDAForMultisigTransaction(program.programId, pda, "someOtherFund", openFundWallet.masterNonce)
+        const openFundWalletTx = await program.account.transaction.fetch(transactionDataPDA);
 
         expect(openFundWallet.masterNonce.eq(new anchor.BN(0))).to.be.true
         expect(openFundWallet.hasActiveVote).to.be.eq(false)
         expect(openFundWallet.members).to.have.lengthOf(1);
+
+        const multisigAccount = await getAccount(connection, pda)
 
         let amount = new anchor.BN(1);
         await program
@@ -343,16 +448,22 @@ describe("SquadMint Multisig program tests", () => {
                 multisig: pda,
                 feePayer: squadMintFeePayer.publicKey,
                 proposer: walletOwnerAndCreator2.keyPair.publicKey,
+                proposedToOwner: openFundWalletTx.messageData.proposedToAccount,
+                multisigAta: multisigAta,
+                proposedToAta: await findATAForPDAForAuthority(pda, openFundWalletTx.messageData.proposedToAccount),
+                tokenProgram: TOKEN_PROGRAM_ID,
+                associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
                 systemProgram: anchor.web3.SystemProgram.programId // can remove this
             })
             .signers([squadMintFeePayer, walletOwnerAndCreator2.keyPair])
             .rpc();
 
         const f = await program.account.transaction.fetch(transactionDataPDA);
+        const multisigAccount2 = await getAccount(connection, pda)
 
         expect(f.votes[0])
             .to.equal(true);
-
+        expect(multisigAccount.amount).to.equal(multisigAccount2.amount);
 
         await program.methods.addMember(memberOpenFundWallet2.keyPair.publicKey)
             .accounts({
@@ -372,6 +483,14 @@ describe("SquadMint Multisig program tests", () => {
                 multisig: pda,
                 feePayer: squadMintFeePayer.publicKey,
                 submitter: memberOpenFundWallet2.keyPair.publicKey,
+                mint: testMint.mintPubkey,
+                proposedToOwner: openFundWalletTx.messageData.proposedToAccount,
+                multisigAta: multisigAta,
+                proposedToAta: await findATAForPDAForAuthority(pda, openFundWalletTx.messageData.proposedToAccount),
+                tokenProgram: TOKEN_PROGRAM_ID,
+                associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+                systemProgram: anchor.web3.SystemProgram.programId // can remove this
+
             })
             .signers([squadMintFeePayer, memberOpenFundWallet2.keyPair])
             .rpc()
@@ -379,6 +498,11 @@ describe("SquadMint Multisig program tests", () => {
 
         const multisig = await program.account.squadMintFund.fetch(pda);
         const fundTx = await program.account.transaction.fetch(transactionDataPDA);
+        const multisigAccount3 = await getAccount(connection, pda)
+
+        expect(f.votes[0])
+            .to.equal(true);
+        expect(multisigAccount2.amount).to.equal(multisigAccount2.amount + BigInt(openFundWalletTx.messageData.amount.toString()));
 
         expect(multisig.hasActiveVote).to.be.false
         expect(multisig.masterNonce.eq(new anchor.BN(1))).to.be.true
@@ -401,6 +525,8 @@ describe("SquadMint Multisig program tests", () => {
         const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet");
         const openFundWallet = await program.account.squadMintFund.fetch(pda);
         const transactionDataPDA = await findPDAForMultisigTransaction(program.programId, pda, "openFundWallet", openFundWallet.masterNonce);
+        const multisigAta = await findATAForPDAForAuthority(pda, testMint.mintPubkey);
+        const oFundTxProposal = await program.account.transaction.fetch(transactionDataPDA);
 
         let vote = program.methods.submitAndExecute(true)
             .accounts({
@@ -408,6 +534,14 @@ describe("SquadMint Multisig program tests", () => {
                 multisig: pda,
                 feePayer: squadMintFeePayer.publicKey,
                 submitter: walletOwnerAndCreator.keyPair.publicKey,
+                mint: testMint.mintPubkey,
+                proposedToOwner: oFundTxProposal.messageData.proposedToAccount,
+                multisigAta: multisigAta,
+                proposedToAta: await findATAForPDAForAuthority(pda, oFundTxProposal.messageData.proposedToAccount),
+                tokenProgram: TOKEN_PROGRAM_ID,
+                associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+                systemProgram: anchor.web3.SystemProgram.programId // can remove this
+
             })
             .signers([squadMintFeePayer, walletOwnerAndCreator.keyPair])
             .rpc()
@@ -426,6 +560,13 @@ describe("SquadMint Multisig program tests", () => {
                 multisig: pda,
                 feePayer: squadMintFeePayer.publicKey,
                 submitter: walletOwnerAndCreator.keyPair.publicKey,
+                proposedToOwner: oFundTxProposal.messageData.proposedToAccount,
+                multisigAta: multisigAta,
+                proposedToAta: await findATAForPDAForAuthority(pda, oFundTxProposal.messageData.proposedToAccount),
+                tokenProgram: TOKEN_PROGRAM_ID,
+                associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+                systemProgram: anchor.web3.SystemProgram.programId // can remove this
+
             })
             .signers([squadMintFeePayer, walletOwnerAndCreator.keyPair])
             .rpc()

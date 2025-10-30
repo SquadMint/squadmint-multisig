@@ -3,7 +3,7 @@
 The multi sig app that controls SquadMints apps voting process
 
 # Devs
-
+built with: `anchor-0.32.1`
 ## Commands
 
 set authority
