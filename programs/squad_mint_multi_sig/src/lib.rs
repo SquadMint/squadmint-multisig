@@ -19,8 +19,6 @@ use anchor_spl::associated_token::get_associated_token_address;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-
-
 declare_id!("BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz");
 // https://github.com/pvnotpv/spl-transfer-pda-poc/blob/main/programs/spl-transfer-poc/src/lib.rs
 // https://github.com/solana-developers/program-examples/tree/main/basics/transfer-sol/native/program
@@ -83,7 +81,7 @@ pub mod squad_mint_multi_sig {
          );
         require!(!multisig.has_active_vote, ErrorCode::CanOnlyInitOneVoteAtATime);
         require!(multisig.members.contains(&proposer), ErrorCode::MemberNotPartOfFund);
-        require!(ctx.accounts.multisig_ata.amount >= amount, ErrorCode::InsufficientFunds);
+        // require!(ctx.accounts.multisig_ata.amount >= amount, ErrorCode::InsufficientFunds); // v2 will have this check as joining fee will add money here
 
         transaction.belongs_to_squad_mint_fund = multisig.key();
         transaction.message_data = TransactionMessage {

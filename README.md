@@ -12,8 +12,14 @@ set authority
 ```
 
 Deploy
+devnet
 ```sh
  anchor deploy
+ 
+```
+localnet 
+```sh
+anchor deploy --provider.cluster localnet
 ```
 
 Run Local Validator
