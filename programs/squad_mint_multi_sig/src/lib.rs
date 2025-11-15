@@ -25,6 +25,7 @@ declare_id!("BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz");
 // https://solana.com/developers/cookbook/wallets/sign-message
 // https://solana.stackexchange.com/questions/20848/encountering-an-account-required-by-the-instruction-is-missing-error-with-ed25
 // TODO: check is we need emit certain events as well to capture off app actions (FUTURE)
+// Add checkes for the mints are as expected
 #[program]
 pub mod squad_mint_multi_sig {
     use super::*;
@@ -49,14 +50,18 @@ pub mod squad_mint_multi_sig {
 
     pub fn add_member(ctx: Context<UpdateFund>, new_member: Pubkey) -> Result<()> {
         msg!("Add member called from: {:?}", ctx.program_id);
+        let multisig_key = ctx.accounts.multisig.key();
+        let new_member_key = ctx.accounts.proposing_joiner.key(); // TODO: do better like in submit_and_execute
+
         let multisig = &mut ctx.accounts.multisig;
         let join_custodial_account = &mut ctx.accounts.join_custodial_account;
 
         require!(multisig.is_private_group, ErrorCode::OperationOnlyApplicableToPrivateGroupFund);
         require!(multisig.members.len() < SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE, ErrorCode::MaxMembersReached);
         require_keys_eq!(multisig.owner.key(), *ctx.accounts.multisig_owner.key, ErrorCode::CannotAddMember);
-        require_keys_eq!(join_custodial_account.request_to_join_user.key(), ctx.accounts.proposing_joiner.key(), ErrorCode::InvalidDestinationOwner);
         require!(!multisig.members.contains(&new_member), ErrorCode::DuplicateMember);
+        require_keys_eq!(ctx.accounts.proposing_joiner.key(), new_member, ErrorCode::InvalidDestinationOwner);
+        require_keys_eq!(join_custodial_account.request_to_join_user.key(), new_member, ErrorCode::DuplicateMember);
 
         let transfer_cpi = TransferChecked {
             from: ctx.accounts.join_custodial_account_ata.to_account_info(),
@@ -65,9 +70,22 @@ pub mod squad_mint_multi_sig {
             mint: ctx.accounts.mint.to_account_info(),
         };
 
+        let join_custodial_account_seeds = &[
+            b"join_custodial_account",
+            multisig_key.as_ref(),
+            new_member_key.as_ref(),
+            &[ctx.bumps.join_custodial_account],
+        ];
+
+        let signer_seeds = &[&join_custodial_account_seeds[..]];
+
         let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_ctx = CpiContext::new(cpi_program, transfer_cpi);
-        transfer_checked(cpi_ctx, join_custodial_account.join_amount, ctx.accounts.mint.decimals)?;
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, transfer_cpi, signer_seeds);
+        transfer_checked(
+            cpi_ctx,
+            join_custodial_account.join_amount,
+            ctx.accounts.mint.decimals
+        )?;
 
         multisig.members.push(new_member);
 
@@ -76,12 +94,13 @@ pub mod squad_mint_multi_sig {
             destination: ctx.accounts.fee_payer.to_account_info(),
             authority: join_custodial_account.to_account_info(),
         };
-        close_account(CpiContext::new(
+        close_account(CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             close_ata_cpi,
+            signer_seeds
         ))?;
 
-        msg!("Rejected new member: {} | fund {}. Total members: {} | Deposited {} to ATA {} | Closing {} and Closing ATA: {}",
+        msg!("Added new member: {} | fund {}. Total members: {} | Deposited {} to ATA {} | Closing {} and Closing ATA: {}",
             new_member.key(),
             multisig.key() ,
             multisig.members.len(),
@@ -459,10 +478,15 @@ pub struct UpdateFund<'info> { // Should input amount and add this to the Tx to 
     )]
     pub multisig: Account<'info, SquadMintFund>,
     #[account(
+        mut,
+        signer
+    )]
+    pub fee_payer: Signer<'info>,
+    #[account(
         signer,
         constraint = multisig_owner.key() == multisig.owner @ ErrorCode::MemberNotPartOfFund
     )]
-    pub fee_payer: Signer<'info>,
+    pub multisig_owner: Signer<'info>,
     pub mint: InterfaceAccount<'info, Mint>,
     /// CHECK: this is checked is done in program
     pub proposing_joiner: UncheckedAccount<'info>,
@@ -481,7 +505,7 @@ pub struct UpdateFund<'info> { // Should input amount and add this to the Tx to 
     pub join_custodial_account: Account<'info, JoinRequestCustodialWallet>,
     #[account(
         mut,
-        seeds = [b"join_amount_ata", join_custodial_account.key().as_ref()],
+        seeds = [b"join_custodial_account_ata", join_custodial_account.key().as_ref()],
         bump,
         token::mint = mint,
         token::authority = join_custodial_account,
@@ -497,7 +521,6 @@ pub struct UpdateFund<'info> { // Should input amount and add this to the Tx to 
         token::token_program = token_program
     )]
     pub multisig_ata: InterfaceAccount<'info, TokenAccount>,
-    pub multisig_owner: Signer<'info>,
 
     // Programs
     pub token_program: Interface<'info, TokenInterface>,
