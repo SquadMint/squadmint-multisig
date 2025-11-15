@@ -34,7 +34,7 @@ pub mod squad_mint_multi_sig {
         if account_handle.len() == 0 || account_handle.len() > SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE {
             return Err(error!(ErrorCode::HandleLenNotValid));
         }
-        require!(join_amount > 100000, ErrorCode::InsufficientFunds);
+        require!(join_amount > 100000, ErrorCode::InsufficientJoiningAmount);
         let fund = &mut ctx.accounts.multisig;
         msg!("Account address: {} ", fund.key());
         fund.owner = *ctx.accounts.multisig_owner.key;
@@ -61,7 +61,7 @@ pub mod squad_mint_multi_sig {
         let transfer_cpi = TransferChecked {
             from: ctx.accounts.join_custodial_account_ata.to_account_info(),
             to: ctx.accounts.multisig_ata.to_account_info(),
-            authority: multisig.to_account_info(),
+            authority: join_custodial_account.to_account_info(),
             mint: ctx.accounts.mint.to_account_info(),
         };
 
@@ -71,17 +71,24 @@ pub mod squad_mint_multi_sig {
 
         multisig.members.push(new_member);
 
-        msg!("Added new member: {} | fund {}. Total members: {}", new_member.key(), multisig.key() , multisig.members.len());
-
         let close_ata_cpi = CloseAccount {
             account: ctx.accounts.join_custodial_account_ata.to_account_info(),
-            destination: ctx.accounts.fee_payer.to_account_info(), // refund to joiner
-            authority: ctx.accounts.join_custodial_account.to_account_info(),
+            destination: ctx.accounts.fee_payer.to_account_info(),
+            authority: join_custodial_account.to_account_info(),
         };
         close_account(CpiContext::new(
             ctx.accounts.token_program.to_account_info(),
             close_ata_cpi,
         ))?;
+
+        msg!("Rejected new member: {} | fund {}. Total members: {} | Deposited {} to ATA {} | Closing {} and Closing ATA: {}",
+            new_member.key(),
+            multisig.key() ,
+            multisig.members.len(),
+            join_custodial_account.join_amount,
+            ctx.accounts.multisig_ata.key(),
+            join_custodial_account.key(),
+            ctx.accounts.join_custodial_account_ata.key());
 
         Ok(())
     }
@@ -101,14 +108,30 @@ pub mod squad_mint_multi_sig {
             to: ctx.accounts.proposing_joiner_ata.to_account_info(),
             authority: multisig.to_account_info(),
             mint: ctx.accounts.mint.to_account_info(),
-        }; // To avoid abuse we need to take a small fee.
+        }; // TODO: To avoid abuse we need to take a small fee.
 
         let cpi_program = ctx.accounts.token_program.to_account_info();
         let cpi_ctx = CpiContext::new(cpi_program, transfer_cpi);
         transfer_checked(cpi_ctx, join_custodial_account.join_amount, ctx.accounts.mint.decimals)?;
 
+        let close_ata_cpi = CloseAccount {
+            account: ctx.accounts.join_custodial_account_ata.to_account_info(),
+            destination: ctx.accounts.fee_payer.to_account_info(),
+            authority: join_custodial_account.to_account_info(),
+        };
+        close_account(CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            close_ata_cpi,
+        ))?;
 
-        msg!("Rejected new member: {} | fund {}. Total members: {} | Refunded {} to ATA {}", new_member.key(), multisig.key() , multisig.members.len(), join_custodial_account.join_amount, ctx.accounts.proposing_joiner_ata.key());
+        msg!("Rejected new member: {} | fund {}. Total members: {} | Refunded {} to ATA {} | Closing {} and Closing ATA: {}",
+            new_member.key(),
+            multisig.key() ,
+            multisig.members.len(),
+            join_custodial_account.join_amount,
+            ctx.accounts.proposing_joiner.key(),
+            join_custodial_account.key(),
+            ctx.accounts.join_custodial_account_ata.key());
 
         Ok(())
     }
@@ -283,12 +306,9 @@ pub mod squad_mint_multi_sig {
                 msg!("TRANSFERRED {} to {}", amount, transaction.message_data.proposed_to_account);
             }
             msg!("Threshold met , Exiting transaction {}. Submitter: {}", transaction.key(), ctx.accounts.submitter.key());
-            // sol_log_compute_units();
-            msg!("CU_LOG: Final compute units logged above");
             return Ok(());
         }
 
-        // sol_log_compute_units();
         msg!("CU_LOG: Final compute units logged above");
         Ok(())
     }
@@ -401,7 +421,7 @@ pub struct CreateJoinRequestProposal<'info> {
     #[account(
         init,
         payer = fee_payer,
-        seeds = [b"join_amount_ata", join_custodial_account.key().as_ref()],
+        seeds = [b"join_custodial_account_ata", join_custodial_account.key().as_ref()],
         bump,
         token::mint = mint,
         token::authority = join_custodial_account,
@@ -431,26 +451,6 @@ pub struct CreateJoinRequestProposal<'info> {
 }
 
 #[derive(Accounts)]
-pub struct CloseJoinRequest<'info> {
-    #[account(mut)]
-    pub fee_payer: Signer<'info>,  // receives rent lamports
-
-    #[account(
-        mut,
-        close = fee_payer,
-        seeds = [multisig.key().as_ref(), proposed_joiner.key().as_ref()],
-        bump
-    )]
-    pub join_custodial_account: Account<'info, JoinRequestCustodialWallet>,
-
-    /// CHECK: The original proposer — just an address, no signature needed
-    pub proposed_joiner: UncheckedAccount<'info>,
-
-    #[account(mut)]
-    pub multisig: Account<'info, SquadMintFund>,
-}
-
-#[derive(Accounts)]
 pub struct UpdateFund<'info> { // Should input amount and add this to the Tx to refund add to group
     #[account(mut,
         seeds = [multisig.account_handle.as_bytes(), multisig.owner.key().as_ref()],
@@ -472,20 +472,21 @@ pub struct UpdateFund<'info> { // Should input amount and add this to the Tx to 
         associated_token::token_program = token_program
     )]
     pub proposing_joiner_ata: InterfaceAccount<'info, TokenAccount>,
-    #[account(
-        mut,
-        seeds = [b"join_amount_ata", multisig.key().as_ref(), proposing_joiner.key().as_ref()],
-        bump,
-        token::mint = mint,
-        token::authority = multisig,
-        token::token_program = token_program,
-    )]
-    pub join_custodial_account_ata: InterfaceAccount<'info, TokenAccount>, // we can close this account and get our money back
     #[account(mut,
+              close = fee_payer,
               seeds = [b"join_custodial_account", multisig.key().as_ref(), proposing_joiner.key().as_ref()],
               bump,
     )]
     pub join_custodial_account: Account<'info, JoinRequestCustodialWallet>,
+    #[account(
+        mut,
+        seeds = [b"join_amount_ata", join_custodial_account.key().as_ref()],
+        bump,
+        token::mint = mint,
+        token::authority = join_custodial_account,
+        token::token_program = token_program,
+    )]
+    pub join_custodial_account_ata: InterfaceAccount<'info, TokenAccount>, // we can close this account and get our money back
     #[account(
         mut,
         seeds = [b"token_vault", multisig.key().as_ref()],
@@ -625,5 +626,6 @@ pub enum ErrorCode {
     NonceOverflow,
     CannotVoteTwice,
     InvalidDestinationOwner,
-    InsufficientFunds
+    InsufficientFunds,
+    InsufficientJoiningAmount,
 }

@@ -9,12 +9,13 @@ import nacl from "tweetnacl";
 let chaiAsPromised: any;
 
 import {
+    amountToSmalletDecimal,
     checkAccountFieldsAreInitializedCorrectly,
     createFeePayerWallet,
     createTestMint,
     createWallet, decimals, findATAForPDAForAuthority,
-    findATAForPDAForAuthority2,
-    findPDAForAuthority,
+    findATAForPDAForAuthority2, findATAForPDAForJoinCustodialAccount,
+    findPDAForAuthority, findPDAForJoinCustodialAccount,
     findPDAForMultisigTransaction,
     getAllAccountsByAuthority,
     initializeAccount, transferTokens
@@ -60,6 +61,8 @@ before(async () => {
 
 describe("SquadMint Multisig program tests", () => {
   // Configure the client to use the local cluster.
+
+
   anchor.setProvider(anchor.AnchorProvider.env());
 
   const program = anchor.workspace
@@ -127,8 +130,41 @@ describe("SquadMint Multisig program tests", () => {
         console.log("Expected PDA:", pda.toBase58());
     });
 
-    it("Add a new member correctly", async () => {
-    const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet");
+    it("Can Initiate Join Request Request to join to new group", async () => {
+        const pda = await findPDAForAuthority(
+            program.programId,
+            walletOwnerAndCreator.keyPair.publicKey, "openFundWallet"
+        );
+        const multisigAta = await findATAForPDAForAuthority2(program.programId, pda);
+        const joinCustodialAccountPDA = await findPDAForJoinCustodialAccount(program.programId, pda, memberOpenFundWallet.keyPair.publicKey);
+        const joinCustodialAccountATA = findATAForPDAForJoinCustodialAccount(program.programId, pda);
+        await program.methods.initiateJoinRequest(new BN(amountToSmalletDecimal(1.11)))
+            .accounts({
+                multisig: pda,
+                feePayer: squadMintFeePayer.publicKey,
+                mint: testMint.mintPubkey,
+                proposingJoiner: memberOpenFundWallet.keyPair.publicKey,
+                proposingJoinerAta: memberOpenFundWallet.ataAddress.address,
+                joinCustodialAccount: joinCustodialAccountPDA,
+                joinCustodialAccountAta: joinCustodialAccountATA,
+                multisigAta: multisigAta,
+                tokenProgram: TOKEN_PROGRAM_ID,
+                associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+                systemProgram: anchor.web3.SystemProgram.programId // can remove this
+            })
+            .signers([squadMintFeePayer, walletOwnerAndCreator.keyPair])
+            .rpc()
+
+        const fund = await program.account.squadMintFund.fetch(pda);
+        expect(fund.members).to.have.lengthOf(2);
+        expect(fund.members[1].toBase58()).to.equal(memberOpenFundWallet.keyPair.publicKey.toBase58());
+    });
+
+    it("Accept Join Request and add a new member correctly", async () => {
+    const pda = await findPDAForAuthority(
+        program.programId,
+        walletOwnerAndCreator.keyPair.publicKey, "openFundWallet"
+    );
       await program.methods.addMember(memberOpenFundWallet.keyPair.publicKey)
         .accounts({
           multisig: pda,
