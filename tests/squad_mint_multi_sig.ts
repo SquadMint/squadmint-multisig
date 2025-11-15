@@ -137,7 +137,8 @@ describe("SquadMint Multisig program tests", () => {
         const multisigAta = await findATAForPDAForAuthority2(program.programId, pda);
         const joinCustodialAccountPDA = await findPDAForJoinCustodialAccount(program.programId, pda, memberOpenFundWallet.keyPair.publicKey);
         const joinCustodialAccountATA = findATAForPDAForJoinCustodialAccount(program.programId, joinCustodialAccountPDA);
-        await program.methods.initiateJoinRequest(new BN(amountToSmalletDecimal(1.11)))
+        const joinAmount = new BN(amountToSmalletDecimal(1.11));
+        await program.methods.initiateJoinRequest(joinAmount)
             .accounts({
                 multisig: pda,
                 feePayer: squadMintFeePayer.publicKey,
@@ -154,13 +155,14 @@ describe("SquadMint Multisig program tests", () => {
             .signers([squadMintFeePayer, memberOpenFundWallet.keyPair])
             .rpc()
 
-        const custodialWallet = await program.account.joinRequestCustodialWallet.fetch(joinCustodialAccountPDA);
-        expect(custodialWallet.joinAmount.toString()).to.equal(new BN(amountToSmalletDecimal(1.11)).toString());
-        expect(custodialWallet.requestToJoinUser.toBase58()).to.be.equal(memberOpenFundWallet.keyPair.publicKey.toBase58());
-        expect(custodialWallet.requestToJoinSquadMintFund.toBase58()).to.be.equal(pda.toBase58());
+        const custodial = await program.account.joinRequestCustodialWallet.fetch(joinCustodialAccountPDA);
+        expect(custodial.joinAmount.eq(joinAmount)).to.be.true;
+        expect(custodial.requestToJoinUser.toBase58()).to.equal(memberOpenFundWallet.keyPair.publicKey.toBase58());
+        expect(custodial.requestToJoinSquadMintFund.toBase58()).to.equal(pda.toBase58());
 
-        const joinCustodialAccount = await getAccount(connection, joinCustodialAccountATA);
-        expect(joinCustodialAccount.amount).to.equal(BigInt(amountToSmalletDecimal(1.11)));
+        const tokenAccount = await getAccount(connection, joinCustodialAccountATA);
+        expect(tokenAccount.amount.toString()).to.equal(joinAmount.toString());
+        expect(tokenAccount.mint.toBase58()).to.equal(testMint.mintPubkey.toBase58());
     });
 
     return;
