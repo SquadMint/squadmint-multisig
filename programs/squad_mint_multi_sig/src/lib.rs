@@ -149,6 +149,7 @@ pub mod squad_mint_multi_sig {
         );
 
         require!(join_amount == multisig.join_amount, ErrorCode::InsufficientFunds);
+        require!(!multisig.members.contains(proposing_joiner.key), ErrorCode::CannotAddMember);
 
         let transfer_cpi = TransferChecked {
             from: ctx.accounts.proposing_joiner_ata.to_account_info(),

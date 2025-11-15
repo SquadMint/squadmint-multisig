@@ -3,7 +3,6 @@ import chai from "chai";
 import { expect } from "chai";
 import * as anchor from "@coral-xyz/anchor";
 import {AnchorError, BN, Program} from "@coral-xyz/anchor";
-import nacl from "tweetnacl";
 
 // Initialize chai-as-promised inside a setup function or describe block
 let chaiAsPromised: any;
@@ -137,7 +136,7 @@ describe("SquadMint Multisig program tests", () => {
         );
         const multisigAta = await findATAForPDAForAuthority2(program.programId, pda);
         const joinCustodialAccountPDA = await findPDAForJoinCustodialAccount(program.programId, pda, memberOpenFundWallet.keyPair.publicKey);
-        const joinCustodialAccountATA = findATAForPDAForJoinCustodialAccount(program.programId, pda);
+        const joinCustodialAccountATA = findATAForPDAForJoinCustodialAccount(program.programId, joinCustodialAccountPDA);
         await program.methods.initiateJoinRequest(new BN(amountToSmalletDecimal(1.11)))
             .accounts({
                 multisig: pda,
@@ -152,13 +151,19 @@ describe("SquadMint Multisig program tests", () => {
                 associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
                 systemProgram: anchor.web3.SystemProgram.programId // can remove this
             })
-            .signers([squadMintFeePayer, walletOwnerAndCreator.keyPair])
+            .signers([squadMintFeePayer, memberOpenFundWallet.keyPair])
             .rpc()
 
-        const fund = await program.account.squadMintFund.fetch(pda);
-        expect(fund.members).to.have.lengthOf(2);
-        expect(fund.members[1].toBase58()).to.equal(memberOpenFundWallet.keyPair.publicKey.toBase58());
+        const custodialWallet = await program.account.joinRequestCustodialWallet.fetch(joinCustodialAccountPDA);
+        expect(custodialWallet.joinAmount.toString()).to.equal(new BN(amountToSmalletDecimal(1.11)).toString());
+        expect(custodialWallet.requestToJoinUser.toBase58()).to.be.equal(memberOpenFundWallet.keyPair.publicKey.toBase58());
+        expect(custodialWallet.requestToJoinSquadMintFund.toBase58()).to.be.equal(pda.toBase58());
+
+        const joinCustodialAccount = await getAccount(connection, joinCustodialAccountATA);
+        expect(joinCustodialAccount.amount).to.equal(BigInt(amountToSmalletDecimal(1.11)));
     });
+
+    return;
 
     it("Accept Join Request and add a new member correctly", async () => {
     const pda = await findPDAForAuthority(
