@@ -92,6 +92,8 @@ const findATAForPDAForAuthority2 = async (
     return pda2;
 };
 
+
+
 const findPDAForMultisigTransaction = async (
     programId: anchor.web3.PublicKey,
     multisigAuthority: anchor.web3.PublicKey,
@@ -111,6 +113,36 @@ const findPDAForMultisigTransaction = async (
     return pda;
 };
 
+const findPDAForJoinCustodialAccount = async (
+    programId: anchor.web3.PublicKey,
+    multisigAuthority: anchor.web3.PublicKey,
+    proposingJoinerKey: anchor.web3.PublicKey,
+): Promise<anchor.web3.PublicKey> => {
+    const [pda, _canonicalBump] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            utf8.encode("join_custodial_account"),
+            multisigAuthority.toBytes(),
+            proposingJoinerKey.toBytes(),
+        ],
+        programId
+    );
+
+    return pda;
+};
+
+const findATAForPDAForJoinCustodialAccount = (
+    programId: anchor.web3.PublicKey,
+    joinCustodialAccountPDA: anchor.web3.PublicKey,
+): anchor.web3.PublicKey => {
+    const [pda2, _canonicalBump] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            utf8.encode("join_custodial_account_ata"),
+            joinCustodialAccountPDA.toBytes()
+        ], programId
+    );
+    return pda2;
+};
+
 const initializeAccount = async (program: Program<SquadMintMultiSig>,
                                  owner: anchor.web3.Keypair,
                                  squadMintFeePayer: anchor.web3.Keypair,
@@ -120,14 +152,12 @@ const initializeAccount = async (program: Program<SquadMintMultiSig>,
     const pda = await findPDAForAuthority(program.programId, owner.publicKey, walletHandle);
     // const pdaATA = await findATAForPDAForAuthority(pda, mint)
     const pdaATA = await findATAForPDAForAuthority2(program.programId, pda)
-    console.log("🦾️ Found PDA on our Client for Wallet:  " + walletHandle + " PDA: "  + pda.toBase58() + "  Authority: " + owner.publicKey.toBase58() + " PDA ATA:" + pdaATA + " mint " + mint.toBase58())
-
-    await program.methods.initialize(walletHandle)
+    console.log("🦾️ Found PDA on our Client for Wallet:  \n" + walletHandle + " PDA: \n"  + pda.toBase58() + "  Authority: \n" + owner.publicKey.toBase58() + " PDA ATA: \n" + pdaATA + " mint \n" + mint.toBase58() + "And fee payer:  \n" + squadMintFeePayer.publicKey.toBase58())
+    await program.methods.initialize(walletHandle, new BN(amountToSmalletDecimal(1.11)))
         .accounts({
             multisigOwner: owner.publicKey,
             feePayer: squadMintFeePayer.publicKey,
             multisig: pda,
-            multisigAta: pdaATA,
             mint: mint,
             tokenProgram: TOKEN_PROGRAM_ID,
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -144,6 +174,11 @@ const getAllAccountsByAuthority = async (
     authority: anchor.web3.PublicKey) => {
     return await accounts.all([{memcmp: { offset: 8, bytes: authority.toBase58() }}
     ]);
+}
+
+const amountToSmalletDecimal = (
+    amount: number) => {
+    return 10 ** decimals * amount;
 }
 
 // Helper function with callback
@@ -238,5 +273,8 @@ export {
     transferTokens,
     findATAForPDAForAuthority2,
     decimals,
-    findATAForPDAForAuthority
+    findATAForPDAForAuthority,
+    amountToSmalletDecimal,
+    findPDAForJoinCustodialAccount,
+    findATAForPDAForJoinCustodialAccount,
 };

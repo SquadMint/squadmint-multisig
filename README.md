@@ -12,8 +12,14 @@ set authority
 ```
 
 Deploy
+devnet
 ```sh
  anchor deploy
+ 
+```
+localnet 
+```sh
+anchor deploy --provider.cluster localnet
 ```
 
 Run Local Validator
@@ -33,7 +39,7 @@ anchor test  --skip-local-validator
 ```sh
 solana rent $(stat -f%z target/deploy/squad_mint_multi_sig.so)
 ```
-
+// Rent-exempt minimum: 2.85727488 SOL
 ### Credits
 
 Design inspired by https://github.com/coral-xyz/multisig
