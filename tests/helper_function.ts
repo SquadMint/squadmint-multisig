@@ -4,15 +4,26 @@ import { SquadMintMultiSig } from "../target/types/squad_mint_multi_sig";
 import {expect} from "chai";
 import {
     Account,
-    ASSOCIATED_TOKEN_PROGRAM_ID, createMint, getAccount, getAssociatedTokenAddress,
+    ASSOCIATED_TOKEN_PROGRAM_ID, createMint, getAccount, getAssociatedTokenAddress, getAssociatedTokenAddressSync,
     getOrCreateAssociatedTokenAccount, mintTo, TOKEN_PROGRAM_ID, transfer
 } from "@solana/spl-token";
-import {Connection} from "@solana/web3.js";
+import {Connection, Keypair, PublicKey} from "@solana/web3.js";
+import {min} from "bn.js";
 
 const { utf8 } = anchor.utils.bytes
 const decimals = 6
 /// Creates wallet and adds this blockchain.
-const createWallet = async (connection: anchor.web3.Connection, mintPubkey: anchor.web3.PublicKey, mintAuthority: anchor.web3.Keypair,  funds: number): Promise<{ keyPair: anchor.web3.Keypair, ataAddress: Account  }> => {
+
+class WalletWithAta {
+    keyPair: anchor.web3.Keypair;
+    ataAccount: Account;
+
+    constructor(keyPair: anchor.web3.Keypair, ataAccount: Account) {
+        this.keyPair = keyPair;
+        this.ataAccount = ataAccount;
+    }
+}
+const createWallet = async (connection: anchor.web3.Connection, mintPubkey: anchor.web3.PublicKey, mintAuthority: anchor.web3.Keypair,  funds: number): Promise<WalletWithAta> => {
     const wallet = anchor.web3.Keypair.generate();
     // wait for confirmation
 
@@ -38,8 +49,8 @@ const createWallet = async (connection: anchor.web3.Connection, mintPubkey: anch
     if (balance < funds) {
         throw new Error(`Token mint failed — balance is ${balance}, expected ${funds}`);
     }
-    const result =  {keyPair: wallet, ataAddress: userATA }
-    console.log("EXIT CREATE AND FUND ATA ACCOUNT 🔥: " + result.keyPair.publicKey.toBase58() + " ATA: " + result.ataAddress.address + " Mint " + mintPubkey.toBase58());
+    const result = new WalletWithAta(wallet, userATA)
+    console.log("EXIT CREATE AND FUND ATA ACCOUNT 🔥: " + result.keyPair.publicKey.toBase58() + " ATA: " + result.ataAccount.address + " Mint " + mintPubkey.toBase58());
     return result
 }
 
@@ -256,6 +267,95 @@ const checkAccountFieldsAreInitializedCorrectly = async (
     console.log(`Transaction signature: ${txSignature}`);
     return txSignature;
 };
+ const initiateJoinRequest = async (
+    program: Program<SquadMintMultiSig>,
+    multisigPda: anchor.web3.PublicKey,
+    requestToJoinMember: WalletWithAta,
+    amount: BN,
+    feePayer: anchor.web3.Keypair,
+    mint: anchor.web3.PublicKey
+) => {
+    // 2. Multisig ATA
+    const multisigAta = await findATAForPDAForAuthority2(program.programId, multisigPda);
+
+    // 3. Join Custodial PDA
+    const joinCustodialPda = await findPDAForJoinCustodialAccount(
+        program.programId,
+        multisigPda,
+        requestToJoinMember.keyPair.publicKey
+    );
+
+    // 4. Join Custodial ATA (PDA)
+    const joinCustodialAta = findATAForPDAForJoinCustodialAccount(
+        program.programId,
+        joinCustodialPda
+    );
+
+    // 5. Execute
+    const sig = await program.methods
+        .initiateJoinRequest(amount)
+        .accounts({
+            multisig: multisigPda,
+            feePayer: feePayer.publicKey,
+            mint: mint,
+            proposingJoiner: requestToJoinMember.keyPair.publicKey,
+            proposingJoinerAta: requestToJoinMember.ataAccount.address,
+            joinCustodialAccount: joinCustodialPda,
+            joinCustodialAccountAta: joinCustodialAta,
+            multisigAta: multisigAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            systemProgram:  anchor.web3.SystemProgram.programId
+        })
+        .signers([feePayer, requestToJoinMember.keyPair])
+        .rpc();
+
+    console.log("Join request initiated:", sig);
+    return {
+        sig,
+        multisigPda,
+        joinCustodialPda,
+        joinCustodialAta
+    };
+};
+ const addMember = async (
+    program: Program<SquadMintMultiSig>,
+    multisigPda: PublicKey,
+    joinCustodialPda: PublicKey,
+    requestToJoinMember: WalletWithAta,
+    multisigOwner: WalletWithAta,
+    feePayer: Keypair,
+    mint: PublicKey
+) => {
+    const multisigAta = await findATAForPDAForAuthority2(program.programId, multisigPda);
+
+    const joinCustodialAta = findATAForPDAForJoinCustodialAccount(
+        program.programId,
+        joinCustodialPda
+    );
+
+    const sig = await program.methods
+        .addMember(requestToJoinMember.keyPair.publicKey)
+        .accounts({
+            multisig: multisigPda,
+            feePayer: feePayer.publicKey,
+            multisigOwner: multisigOwner.keyPair.publicKey,
+            mint: mint,
+            proposingJoiner: requestToJoinMember.keyPair.publicKey,
+            proposingJoinerAta: requestToJoinMember.ataAccount.address,
+            joinCustodialAccount: joinCustodialPda,
+            joinCustodialAccountAta: joinCustodialAta,
+            multisigAta: multisigAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            systemProgram: anchor.web3.SystemProgram.programId
+        })
+        .signers([feePayer, multisigOwner.keyPair])
+        .rpc();
+
+    console.log("Member added:", sig);
+    return { sig, multisigPda, joinCustodialPda };
+};
 
 // const fetchAccount = async (program: Program<HelloWorld>, authority: anchor.web3.PublicKey) => {
 //     return await program.account.myAccount.fetch(await findPDAForAuthority(program.programId, authority))
@@ -277,4 +377,6 @@ export {
     amountToSmalletDecimal,
     findPDAForJoinCustodialAccount,
     findATAForPDAForJoinCustodialAccount,
+    initiateJoinRequest,
+    addMember, WalletWithAta
 };
