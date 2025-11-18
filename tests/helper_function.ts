@@ -324,6 +324,7 @@ const checkAccountFieldsAreInitializedCorrectly = async (
     joinCustodialPda: PublicKey,
     requestToJoinMember: WalletWithAta,
     multisigOwner: WalletWithAta,
+    signer: WalletWithAta,
     feePayer: Keypair,
     mint: PublicKey
 ) => {
@@ -350,7 +351,7 @@ const checkAccountFieldsAreInitializedCorrectly = async (
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId
         })
-        .signers([feePayer, multisigOwner.keyPair])
+        .signers([feePayer, signer.keyPair])
         .rpc();
 
     console.log("Member added:", sig);
@@ -363,6 +364,7 @@ const rejectMember = async (
     joinCustodialPda: PublicKey,
     requestToJoinMember: WalletWithAta,
     multisigOwner: WalletWithAta,
+    signer: WalletWithAta,
     feePayer: Keypair,
     mint: PublicKey
 ) => {
@@ -389,7 +391,7 @@ const rejectMember = async (
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId
         })
-        .signers([feePayer, multisigOwner.keyPair])
+        .signers([feePayer, signer.keyPair])
         .rpc();
 
     console.log("Member added:", sig);

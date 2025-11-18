@@ -205,20 +205,40 @@ describe("SquadMint Multisig program tests", () => {
         ).to.be.rejected;
     });
 
-    it("Only owner can accept join request - memberOpenFundWallet", async () => {
+    it("Reject When adding a new member but signer is not part of the group", async () => {
         const pda = await findPDAForAuthority(
             program.programId,
             walletOwnerAndCreator.keyPair.publicKey, "openFundWallet"
         );
-        const joinCustodialAccountPDA = await findPDAForJoinCustodialAccount(program.programId, pda, memberOpenFundWallet.keyPair.publicKey);
+        const multisigAta = await findATAForPDAForAuthority2(program.programId, pda);
+        const joinCustodialAccountPDA = await findPDAForJoinCustodialAccount(program.programId, pda, memberOpenFundWallet2.keyPair.publicKey);
         const joinCustodialAccountATA = findATAForPDAForJoinCustodialAccount(program.programId, joinCustodialAccountPDA);
 
-        const rejection = addMember(
+        const memberOpenFundWallet2Ata = await getAccount(connection, memberOpenFundWallet2.ataAccount.address)
+        const walletAmountBeforeRefund = memberOpenFundWallet2Ata.amount;
+
+        const joinCustodialAccountATATokenAccount = await getAccount(connection, joinCustodialAccountATA);
+        expect(joinCustodialAccountATATokenAccount.amount.toString()).to.equal(new BN(amountToSmalletDecimal(1.11)).toString());
+        const feePayerSol = await connection.getBalance(squadMintFeePayer.publicKey);
+
+        const rejection = rejectMember(
             program,
             pda,
             joinCustodialAccountPDA,
-            memberOpenFundWallet,
-            walletOwnerAndCreator2,
+            memberOpenFundWallet2,
+            walletOwnerAndCreator,
+            memberOpenFundWallet2,
+            squadMintFeePayer,
+            testMint.mintPubkey
+        )
+
+        const rejection2 = addMember(
+            program,
+            pda,
+            joinCustodialAccountPDA,
+            memberOpenFundWallet2,
+            walletOwnerAndCreator,
+            memberOpenFundWallet2,
             squadMintFeePayer,
             testMint.mintPubkey
         )
@@ -226,6 +246,11 @@ describe("SquadMint Multisig program tests", () => {
         await expect(
             rejection
         ).to.be.rejected;
+
+        await expect(
+            rejection2
+        ).to.be.rejected;
+
     });
 
     it("Accept Join Request and add a new member correctly - memberOpenFundWallet", async () => {
@@ -249,6 +274,7 @@ describe("SquadMint Multisig program tests", () => {
             pda,
             joinCustodialAccountPDA,
             memberOpenFundWallet,
+            walletOwnerAndCreator,
             walletOwnerAndCreator,
             squadMintFeePayer,
             testMint.mintPubkey
@@ -274,12 +300,35 @@ describe("SquadMint Multisig program tests", () => {
         expect(feePayerSolMut).to.gt(feePayerSol); // LAZY but its enough for now
     });
 
+    it("Only owner can accept join request - memberOpenFundWallet", async () => {
+        const pda = await findPDAForAuthority(
+            program.programId,
+            walletOwnerAndCreator.keyPair.publicKey, "openFundWallet"
+        );
+        const joinCustodialAccountPDA = await findPDAForJoinCustodialAccount(program.programId, pda, memberOpenFundWallet.keyPair.publicKey);
+
+        const rejection = addMember(
+            program,
+            pda,
+            joinCustodialAccountPDA,
+            memberOpenFundWallet,
+            walletOwnerAndCreator,
+            memberOpenFundWallet,
+            squadMintFeePayer,
+            testMint.mintPubkey
+        )
+
+        await expect(
+            rejection
+        ).to.be.rejected;
+    });
+
     it("Cannot Initiate Join Request Request again after acceptance - memberOpenFundWallet", async () => {
         const pda = await findPDAForAuthority(
             program.programId,
             walletOwnerAndCreator.keyPair.publicKey, "openFundWallet"
         );
-        const joinAmount = new BN(amountToSmalletDecimal(6));
+        const joinAmount = new BN(amountToSmalletDecimal(1.11));
         const rejection = initiateJoinRequest(
             program,
             pda,
@@ -315,6 +364,7 @@ describe("SquadMint Multisig program tests", () => {
             joinCustodialAccountPDA,
             memberOpenFundWallet2,
             walletOwnerAndCreator,
+            walletOwnerAndCreator,
             squadMintFeePayer,
             testMint.mintPubkey
         )
@@ -342,8 +392,6 @@ describe("SquadMint Multisig program tests", () => {
         expect(feePayerSolMut).to.gt(feePayerSol); // LAZY but its enough for now
     });
 
-    return;
-
     /// Needs use to test initializing 15 accounts and funding and adding these accounts
     it.skip("try to add more than 15 uninitialized member wallets to openFundWallet2 should be rejected", async () => {
         const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet2");
@@ -359,60 +407,34 @@ describe("SquadMint Multisig program tests", () => {
         expect(addMember).to.be.rejectedWith(/MaxMembersReached/);
     });
 
-    it.skip("When adding unInitialized wallet and sign with a wallet that's not owner", async () => {
-        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet2");
-        let unInitializedMember = anchor.web3.Keypair.generate();
+    it("When adding an existing member then should be rejected", async () => {
+        const pda = await findPDAForAuthority(
+            program.programId,
+            walletOwnerAndCreator.keyPair.publicKey, "openFundWallet"
+        );
+        const joinAmount = new BN(amountToSmalletDecimal(1.11));
+        const rejection = initiateJoinRequest(
+            program,
+            pda,
+            memberOpenFundWallet,
+            joinAmount,
+            squadMintFeePayer,
+            testMint.mintPubkey)
 
-        let addMember = program.methods.addMember(unInitializedMember.publicKey)
-            .accounts({
-                multisig: pda,
-                multisigOwner: walletOwnerAndCreator.keyPair.publicKey
-            })
-            .signers([walletOwnerAndCreator2.keyPair])
-            .rpc()
+        const rejection2 = initiateJoinRequest(
+            program,
+            pda,
+            walletOwnerAndCreator,
+            joinAmount,
+            squadMintFeePayer,
+            testMint.mintPubkey)
 
-        expect(addMember).to.be.rejected
-    });
-
-    it.skip("When adding an existing member then should be rejected", async () => {
-        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet2");
-        let addMember = program.methods.addMember(memberOpenFundWallet.keyPair.publicKey)
-            .accounts({
-                multisig: pda,
-                multisigOwner: walletOwnerAndCreator.keyPair.publicKey
-            })
-            .signers([walletOwnerAndCreator.keyPair])
-            .rpc()
-
-        expect(addMember).to.be.rejected // BE MORE explict with the error here please
-    });
-
-    it("When adding a new member but signer is not part of the group", async () => {
-        let unInitializedMember = anchor.web3.Keypair.generate();
-
-        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet2");
-        let addMember = program.methods.addMember(memberOpenFundWallet.keyPair.publicKey)
-            .accounts({
-                multisig: pda,
-                multisigOwner: walletOwnerAndCreator.keyPair.publicKey
-            })
-            .signers([unInitializedMember])
-            .rpc()
-
-        expect(addMember).to.be.rejected
-    });
-
-    it("When adding an wallet Owner again as member then should be rejected", async () => {
-        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator2.keyPair.publicKey, "someOtherFund");
-        let addMember = program.methods.addMember(walletOwnerAndCreator2.keyPair.publicKey)
-            .accounts({
-                multisig: pda,
-                multisigOwner: walletOwnerAndCreator2.keyPair.publicKey
-            })
-            .signers([walletOwnerAndCreator2.keyPair])
-            .rpc()
-
-        expect(addMember).to.be.rejectedWith("This member already exists in this group");
+        await expect(
+            rejection
+        ).to.be.rejected;
+        await expect(
+            rejection2
+        ).to.be.rejected;
     });
 
     it("We can successfully create a proposal", async () => {
@@ -503,7 +525,6 @@ describe("SquadMint Multisig program tests", () => {
 
         expect(openFundWallet2.hasActiveVote).to.be.true
     });
-
 
     it("Should reject when proposer signer is not part of the group", async () => {
         const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet");
@@ -606,7 +627,7 @@ describe("SquadMint Multisig program tests", () => {
             .to.equal(true);
     });
 
-    it.skip("Reject proposal when ATA doesn't have enough funds ", async () => {
+    it("Reject proposal when ATA doesn't have enough funds ", async () => {
         const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator2.keyPair.publicKey, "someOtherFund");
         const ata = await findATAForPDAForAuthority2(program.programId, pda);
 

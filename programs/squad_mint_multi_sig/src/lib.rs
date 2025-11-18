@@ -57,7 +57,7 @@ pub mod squad_mint_multi_sig {
         let join_custodial_account = &mut ctx.accounts.join_custodial_account;
 
         require!(multisig.is_private_group, ErrorCode::OperationOnlyApplicableToPrivateGroupFund);
-        require!(multisig.members.len() < SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE, ErrorCode::MaxMembersReached);
+        require!(multisig.members.len() <= SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE, ErrorCode::MaxMembersReached);
         require_keys_eq!(multisig.owner.key(), *ctx.accounts.multisig_owner.key, ErrorCode::CannotAddMember);
         require!(!multisig.members.contains(&new_member), ErrorCode::DuplicateMember);
         require_keys_eq!(ctx.accounts.proposing_joiner.key(), new_member, ErrorCode::InvalidDestinationOwner);
