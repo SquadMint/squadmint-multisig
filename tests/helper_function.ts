@@ -114,7 +114,7 @@ const findPDAForMultisigTransaction = async (
     const masterNonceBuffer = multisigCurrentMasterNonce.toArrayLike(Buffer, 'le', 8);
     const [pda, _canonicalBump] = anchor.web3.PublicKey.findProgramAddressSync(
         [
-            utf8.encode(multisigWalletHandle),
+            utf8.encode("proposal_tx_data"),
             multisigAuthority.toBytes(),
             masterNonceBuffer
         ],
