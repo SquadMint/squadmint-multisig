@@ -57,7 +57,7 @@ pub mod squad_mint_multi_sig {
         let join_custodial_account = &mut ctx.accounts.join_custodial_account;
 
         require!(multisig.is_private_group, ErrorCode::OperationOnlyApplicableToPrivateGroupFund);
-        require!(multisig.members.len() < SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE, ErrorCode::MaxMembersReached);
+        require!(multisig.members.len() <= SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE, ErrorCode::MaxMembersReached);
         require_keys_eq!(multisig.owner.key(), *ctx.accounts.multisig_owner.key, ErrorCode::CannotAddMember);
         require!(!multisig.members.contains(&new_member), ErrorCode::DuplicateMember);
         require_keys_eq!(ctx.accounts.proposing_joiner.key(), new_member, ErrorCode::InvalidDestinationOwner);
@@ -114,6 +114,10 @@ pub mod squad_mint_multi_sig {
 
     pub fn reject_member(ctx: Context<UpdateFund>, new_member: Pubkey) -> Result<()> {
         msg!("Calling reject member: {:?}", ctx.program_id);
+
+        let multisig_key = ctx.accounts.multisig.key();
+        let new_member_key = ctx.accounts.proposing_joiner.key();
+
         let multisig = &mut ctx.accounts.multisig;
         let join_custodial_account = &mut ctx.accounts.join_custodial_account;
 
@@ -121,26 +125,45 @@ pub mod squad_mint_multi_sig {
         require_keys_eq!(multisig.owner.key(), *ctx.accounts.multisig_owner.key, ErrorCode::CannotAddMember);
         require_keys_eq!(join_custodial_account.request_to_join_user.key(), ctx.accounts.proposing_joiner.key(), ErrorCode::InvalidDestinationOwner);
         require!(!multisig.members.contains(&new_member), ErrorCode::DuplicateMember);
+        require_keys_eq!(ctx.accounts.proposing_joiner.key(), new_member, ErrorCode::InvalidDestinationOwner);
 
         let transfer_cpi = TransferChecked {
             from: ctx.accounts.join_custodial_account_ata.to_account_info(),
             to: ctx.accounts.proposing_joiner_ata.to_account_info(),
-            authority: multisig.to_account_info(),
+            authority: join_custodial_account.to_account_info(),
             mint: ctx.accounts.mint.to_account_info(),
         }; // TODO: To avoid abuse we need to take a small fee.
 
+        let join_custodial_account_seeds = &[
+            b"join_custodial_account",
+            multisig_key.as_ref(),
+            new_member_key.as_ref(),
+            &[ctx.bumps.join_custodial_account],
+        ];
+
+        let signer_seeds = &[&join_custodial_account_seeds[..]];
+
         let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_ctx = CpiContext::new(cpi_program, transfer_cpi);
-        transfer_checked(cpi_ctx, join_custodial_account.join_amount, ctx.accounts.mint.decimals)?;
+        let cpi_ctx = CpiContext::new_with_signer(
+            cpi_program,
+            transfer_cpi,
+            signer_seeds
+        );
+        transfer_checked(
+            cpi_ctx,
+            join_custodial_account.join_amount,
+            ctx.accounts.mint.decimals
+        )?;
 
         let close_ata_cpi = CloseAccount {
             account: ctx.accounts.join_custodial_account_ata.to_account_info(),
             destination: ctx.accounts.fee_payer.to_account_info(),
             authority: join_custodial_account.to_account_info(),
         };
-        close_account(CpiContext::new(
+        close_account(CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             close_ata_cpi,
+            signer_seeds
         ))?;
 
         msg!("Rejected new member: {} | fund {}. Total members: {} | Refunded {} to ATA {} | Closing {} and Closing ATA: {}",
@@ -167,8 +190,9 @@ pub mod squad_mint_multi_sig {
             ErrorCode::InvalidDestinationOwner
         );
 
-        require!(join_amount == multisig.join_amount, ErrorCode::InsufficientFunds);
-        require!(!multisig.members.contains(proposing_joiner.key), ErrorCode::CannotAddMember);
+        require!(join_amount == multisig.join_amount, ErrorCode::JoiningAmountShouldMatchTargetWallet);
+        require!(!multisig.members.contains(proposing_joiner.key), ErrorCode::DuplicateMember);
+        // SHOULD WE LIMIT THE JOIN AMOUNT TO HAVE A MINIMUM?
 
         let transfer_cpi = TransferChecked {
             from: ctx.accounts.proposing_joiner_ata.to_account_info(),
@@ -627,13 +651,13 @@ impl Transaction {
 pub enum ErrorCode {
     #[msg("Handle length is not valid")]
     HandleLenNotValid,
-    #[msg("Member could should not be more than 15")]
+    #[msg("Member count should not exceed 15")]
     MaxMembersReached,
     #[msg("This member already exists in this group")]
     DuplicateMember,
-    #[msg("This member does not exists in this group")]
+    #[msg("This member does not exist in this group")]
     MemberNotPartOfFund,
-    #[msg("You are not the owner therefore cannot add new member")]
+    #[msg("You are not the owner and therefore cannot add a new member")]
     CannotAddMember,
     #[msg("This operation is only applicable to group funds")]
     OperationOnlyApplicableToPrivateGroupFund,
@@ -643,13 +667,22 @@ pub enum ErrorCode {
     CanOnlyInitOneVoteAtATime,
     #[msg("This transaction has already been executed")]
     AlreadyExecuted,
-    #[msg("This transaction has already been executed. Invalid Nonce")]
+    #[msg("This transaction has already been executed. Invalid nonce")]
     AlreadyExecutedInvalidNonce,
+    #[msg("Invalid signature")]
     InvalidSignature,
+    #[msg("Not enough signatures to complete this operation")]
     InsufficientSignatures,
+    #[msg("Nonce overflow")]
     NonceOverflow,
+    #[msg("You cannot vote twice on the same proposal")]
     CannotVoteTwice,
+    #[msg("Invalid destination owner for this operation")]
     InvalidDestinationOwner,
+    #[msg("Insufficient funds for this operation")]
     InsufficientFunds,
+    #[msg("Insufficient joining amount")]
     InsufficientJoiningAmount,
+    #[msg("Joining amount must be equal to that specified my by the wallet")]
+    JoiningAmountShouldMatchTargetWallet,
 }
