@@ -357,6 +357,45 @@ const checkAccountFieldsAreInitializedCorrectly = async (
     return { sig, multisigPda, joinCustodialPda };
 };
 
+const rejectMember = async (
+    program: Program<SquadMintMultiSig>,
+    multisigPda: PublicKey,
+    joinCustodialPda: PublicKey,
+    requestToJoinMember: WalletWithAta,
+    multisigOwner: WalletWithAta,
+    feePayer: Keypair,
+    mint: PublicKey
+) => {
+    const multisigAta = await findATAForPDAForAuthority2(program.programId, multisigPda);
+
+    const joinCustodialAta = findATAForPDAForJoinCustodialAccount(
+        program.programId,
+        joinCustodialPda
+    );
+
+    const sig = await program.methods
+        .rejectMember(requestToJoinMember.keyPair.publicKey)
+        .accounts({
+            multisig: multisigPda,
+            feePayer: feePayer.publicKey,
+            multisigOwner: multisigOwner.keyPair.publicKey,
+            mint: mint,
+            proposingJoiner: requestToJoinMember.keyPair.publicKey,
+            proposingJoinerAta: requestToJoinMember.ataAccount.address,
+            joinCustodialAccount: joinCustodialPda,
+            joinCustodialAccountAta: joinCustodialAta,
+            multisigAta: multisigAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            systemProgram: anchor.web3.SystemProgram.programId
+        })
+        .signers([feePayer, multisigOwner.keyPair])
+        .rpc();
+
+    console.log("Member added:", sig);
+    return { sig, multisigPda, joinCustodialPda };
+};
+
 // const fetchAccount = async (program: Program<HelloWorld>, authority: anchor.web3.PublicKey) => {
 //     return await program.account.myAccount.fetch(await findPDAForAuthority(program.programId, authority))
 // }
@@ -378,5 +417,6 @@ export {
     findPDAForJoinCustodialAccount,
     findATAForPDAForJoinCustodialAccount,
     initiateJoinRequest,
-    addMember, WalletWithAta
+    addMember,
+    WalletWithAta, rejectMember
 };

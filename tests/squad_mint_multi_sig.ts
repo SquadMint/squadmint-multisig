@@ -19,7 +19,7 @@ import {
     findPDAForMultisigTransaction,
     getAllAccountsByAuthority,
     initializeAccount,
-    initiateJoinRequest,
+    initiateJoinRequest, rejectMember,
     transferTokens, WalletWithAta
 } from "./helper_function";
 
@@ -51,8 +51,8 @@ before(async () => {
     testMint = await createTestMint(connection, squadMintFeePayer)
 
     memberOpenFundWallet = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 5);
-    proposedToWallet = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 5);
     memberOpenFundWallet2 = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
+    proposedToWallet = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 5);
     walletOwnerAndCreator = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 4);
     walletOwnerAndCreator2 = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 5);
 
@@ -160,14 +160,14 @@ describe("SquadMint Multisig program tests", () => {
         expect(tokenAccount.mint.toBase58()).to.equal(testMint.mintPubkey.toBase58());
     });
 
-    it("Can Initiate Different concurrent Join Request Requests - memberOpenFundWallet2", async () => {
+    it("Can init different concurrent Join Request Requests - memberOpenFundWallet2", async () => {
         const pda = await findPDAForAuthority(
             program.programId,
             walletOwnerAndCreator.keyPair.publicKey, "openFundWallet"
         );
-        const joinCustodialAccountPDA = await findPDAForJoinCustodialAccount(program.programId, pda, memberOpenFundWallet.keyPair.publicKey);
+        const joinCustodialAccountPDA = await findPDAForJoinCustodialAccount(program.programId, pda, memberOpenFundWallet2.keyPair.publicKey);
         const joinCustodialAccountATA = findATAForPDAForJoinCustodialAccount(program.programId, joinCustodialAccountPDA);
-        const joinAmount = new BN(amountToSmalletDecimal(3));
+        const joinAmount = new BN(amountToSmalletDecimal(1.11)); // DRAIN memberOpenFundWallet2 ATA
         await initiateJoinRequest(
             program,
             pda,
@@ -178,7 +178,7 @@ describe("SquadMint Multisig program tests", () => {
 
         const custodial = await program.account.joinRequestCustodialWallet.fetch(joinCustodialAccountPDA);
         expect(custodial.joinAmount.eq(joinAmount)).to.be.true;
-        expect(custodial.requestToJoinUser.toBase58()).to.equal(memberOpenFundWallet.keyPair.publicKey.toBase58());
+        expect(custodial.requestToJoinUser.toBase58()).to.equal(memberOpenFundWallet2.keyPair.publicKey.toBase58());
         expect(custodial.requestToJoinSquadMintFund.toBase58()).to.equal(pda.toBase58());
 
         const tokenAccount = await getAccount(connection, joinCustodialAccountATA);
@@ -205,7 +205,30 @@ describe("SquadMint Multisig program tests", () => {
         ).to.be.rejected;
     });
 
-    it("Accept Join Request and add a new member correctly", async () => {
+    it("Only owner can accept join request - memberOpenFundWallet", async () => {
+        const pda = await findPDAForAuthority(
+            program.programId,
+            walletOwnerAndCreator.keyPair.publicKey, "openFundWallet"
+        );
+        const joinCustodialAccountPDA = await findPDAForJoinCustodialAccount(program.programId, pda, memberOpenFundWallet.keyPair.publicKey);
+        const joinCustodialAccountATA = findATAForPDAForJoinCustodialAccount(program.programId, joinCustodialAccountPDA);
+
+        const rejection = addMember(
+            program,
+            pda,
+            joinCustodialAccountPDA,
+            memberOpenFundWallet,
+            walletOwnerAndCreator2,
+            squadMintFeePayer,
+            testMint.mintPubkey
+        )
+
+        await expect(
+            rejection
+        ).to.be.rejected;
+    });
+
+    it("Accept Join Request and add a new member correctly - memberOpenFundWallet", async () => {
         const pda = await findPDAForAuthority(
             program.programId,
             walletOwnerAndCreator.keyPair.publicKey, "openFundWallet"
@@ -238,6 +261,7 @@ describe("SquadMint Multisig program tests", () => {
         const multisigTokenAccountMut = await getAccount(connection, multisigAta);
         expect(multisigTokenAccountMut.amount.toString()).to.equal(new BN(amountToSmalletDecimal(3 + 1.11)).toString());
 
+        // Expect the account to be closed
         await expect(
             program.account.joinRequestCustodialWallet.fetch(joinCustodialAccountPDA)
         ).to.be.rejected;
@@ -269,40 +293,56 @@ describe("SquadMint Multisig program tests", () => {
         ).to.be.rejected;
     });
 
-
-
-    return;
-
-    // This is not possible anymore as the accounts need an active ATA
-    it.skip("try to add 15 uninitialized member wallets to openFundWallet2", async () => {
+    it("Reject Join Request - memberOpenFundWallet2", async () => {
         const pda = await findPDAForAuthority(
             program.programId,
-            walletOwnerAndCreator.keyPair.publicKey,
-            "openFundWallet2"
+            walletOwnerAndCreator.keyPair.publicKey, "openFundWallet"
         );
+        const multisigAta = await findATAForPDAForAuthority2(program.programId, pda);
+        const joinCustodialAccountPDA = await findPDAForJoinCustodialAccount(program.programId, pda, memberOpenFundWallet2.keyPair.publicKey);
+        const joinCustodialAccountATA = findATAForPDAForJoinCustodialAccount(program.programId, joinCustodialAccountPDA);
 
-        const members: anchor.web3.Keypair[] = [];
+        const memberOpenFundWallet2Ata = await getAccount(connection, memberOpenFundWallet2.ataAccount.address)
+        const walletAmountBeforeRefund = memberOpenFundWallet2Ata.amount;
 
-        for (let i = 0; i < 13; i++) {
-            members.push(anchor.web3.Keypair.generate());
-        }
+        const joinCustodialAccountATATokenAccount = await getAccount(connection, joinCustodialAccountATA);
+        expect(joinCustodialAccountATATokenAccount.amount.toString()).to.equal(new BN(amountToSmalletDecimal(1.11)).toString());
+        const feePayerSol = await connection.getBalance(squadMintFeePayer.publicKey);
 
-        for (const member of members) {
-            await program.methods.addMember(member.publicKey)
-                .accounts({
-                    multisig: pda,
-                    multisigOwner: walletOwnerAndCreator.keyPair.publicKey
-                })
-                .signers([walletOwnerAndCreator.keyPair])
-                .rpc();
-        }
+        await rejectMember(
+            program,
+            pda,
+            joinCustodialAccountPDA,
+            memberOpenFundWallet2,
+            walletOwnerAndCreator,
+            squadMintFeePayer,
+            testMint.mintPubkey
+        )
 
         const fund = await program.account.squadMintFund.fetch(pda);
-        expect(fund.members).to.have.lengthOf(15);
-        for (let i = 0; i < members.length; i++) {
-            expect(fund.members[i + 2].toBase58()).to.equal(members[i].publicKey.toBase58());
-        }
+        expect(fund.members).to.have.lengthOf(2);
+        expect(fund.members[1].toBase58()).to.equal(memberOpenFundWallet.keyPair.publicKey.toBase58()); // Last memeber should be the last accepted member
+
+        const multisigTokenAccountMut = await getAccount(connection, multisigAta);
+        expect(multisigTokenAccountMut.amount.toString()).to.equal(new BN(amountToSmalletDecimal(3 + 1.11)).toString());
+
+        const memberOpenFundWallet2AtaMut = await getAccount(connection, memberOpenFundWallet2.ataAccount.address)
+        expect(memberOpenFundWallet2AtaMut.amount.toString()).to.equal(new BN(amountToSmalletDecimal( 1.11)).add(new BN(walletAmountBeforeRefund)).toString());
+
+        // Expect the ATA and PDA accounts to be closed
+        await expect(
+            program.account.joinRequestCustodialWallet.fetch(joinCustodialAccountPDA)
+        ).to.be.rejected;
+
+        await expect(
+            getAccount(connection, joinCustodialAccountATA)
+        ).to.be.rejected;
+
+        const feePayerSolMut = await connection.getBalance(squadMintFeePayer.publicKey);
+        expect(feePayerSolMut).to.gt(feePayerSol); // LAZY but its enough for now
     });
+
+    return;
 
     /// Needs use to test initializing 15 accounts and funding and adding these accounts
     it.skip("try to add more than 15 uninitialized member wallets to openFundWallet2 should be rejected", async () => {
