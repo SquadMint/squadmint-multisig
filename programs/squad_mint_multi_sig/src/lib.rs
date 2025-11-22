@@ -41,6 +41,7 @@ pub mod squad_mint_multi_sig {
         fund.owner = *ctx.accounts.multisig_owner.key;
         fund.members.push(*ctx.accounts.multisig_owner.key); // This is possibly waste of space, needs a better design (maybe), user exist in two places
         fund.has_active_vote = false;
+        fund.master_nonce = 0;
         fund.join_amount = join_amount;
         fund.is_private_group = true;                               // We will use this later (Maybe)
         fund.account_handle = account_handle.to_string();           // There might be no need to save this value
@@ -62,6 +63,8 @@ pub mod squad_mint_multi_sig {
         require!(!multisig.members.contains(&new_member), ErrorCode::DuplicateMember);
         require_keys_eq!(ctx.accounts.proposing_joiner.key(), new_member, ErrorCode::InvalidDestinationOwner);
         require_keys_eq!(join_custodial_account.request_to_join_user.key(), new_member, ErrorCode::DuplicateMember);
+        require_keys_eq!(join_custodial_account.request_to_join_squad_mint_fund.key(), multisig_key, ErrorCode::DuplicateMember);
+        require!(join_custodial_account.join_amount == multisig.join_amount, ErrorCode::InvalidDestinationOwner);
 
         let transfer_cpi = TransferChecked {
             from: ctx.accounts.join_custodial_account_ata.to_account_info(),
@@ -126,6 +129,9 @@ pub mod squad_mint_multi_sig {
         require_keys_eq!(join_custodial_account.request_to_join_user.key(), ctx.accounts.proposing_joiner.key(), ErrorCode::InvalidDestinationOwner);
         require!(!multisig.members.contains(&new_member), ErrorCode::DuplicateMember);
         require_keys_eq!(ctx.accounts.proposing_joiner.key(), new_member, ErrorCode::InvalidDestinationOwner);
+        require_keys_eq!(join_custodial_account.request_to_join_squad_mint_fund.key(), multisig_key, ErrorCode::InvalidDestinationOwner);
+        require!(join_custodial_account.join_amount == multisig.join_amount, ErrorCode::DuplicateMember);
+
 
         let transfer_cpi = TransferChecked {
             from: ctx.accounts.join_custodial_account_ata.to_account_info(),
@@ -408,7 +414,7 @@ pub struct SquadMintFund {
 pub struct CreateProposal<'info> { // This is a payment proposal
     #[account(init,
               payer = fee_payer,
-              seeds = [multisig.account_handle.as_bytes(), multisig.key().as_ref(), multisig.master_nonce.to_le_bytes().as_ref()],
+              seeds = [b"proposal_tx_data", multisig.key().as_ref(), multisig.master_nonce.to_le_bytes().as_ref()],
               bump,
               space = 8 + Transaction::MAX_SIZE)]
     pub transaction: Account<'info, Transaction>,

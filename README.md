@@ -3,7 +3,9 @@
 The multi sig app that controls SquadMints apps voting process
 
 # Devs
-built with: `anchor-0.32.1`
+- Anchor:  `anchor-0.32.1` 
+- Cargo:   `cargo 1.90.0 (840b83a10 2025-07-30)`
+- Rust:    `rustc 1.90.0 (1159e78c4 2025-09-14)`
 ## Commands
 
 set authority
@@ -39,7 +41,7 @@ anchor test  --skip-local-validator
 ```sh
 solana rent $(stat -f%z target/deploy/squad_mint_multi_sig.so)
 ```
-// Rent-exempt minimum: 2.85727488 SOL
+// Rent-exempt minimum: 3.11727488 SOL
 ### Credits
 
 Design inspired by https://github.com/coral-xyz/multisig
