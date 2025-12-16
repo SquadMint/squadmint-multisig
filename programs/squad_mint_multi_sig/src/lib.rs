@@ -315,7 +315,7 @@ pub mod squad_mint_multi_sig {
         }
 
         let yes_votes = transaction.votes.iter().filter(|&&v| v).count();
-        let no_votes = transaction.votes.len() - yes_votes;
+        let no_votes = transaction.votes.iter().filter(|&&v| !v).count();
         let total_members = multisig.members.len();
         let yes_percentage = (yes_votes as f64 / total_members as f64) * 100.0f64;
         let no_percentage = (no_votes as f64 / total_members as f64) * 100.0f64;
@@ -358,8 +358,6 @@ pub mod squad_mint_multi_sig {
             msg!("Threshold met , Exiting transaction {}. Submitter: {}", transaction.key(), ctx.accounts.submitter.key());
             return Ok(());
         }
-
-        msg!("CU_LOG: Final compute units logged above");
         Ok(())
     }
 }
@@ -405,8 +403,8 @@ pub struct SquadMintFund {
     has_active_vote: bool,
     is_private_group: bool,
     members: Vec<Pubkey>,
-    join_amount: u64,
-    master_nonce: u64,
+    join_amount: u64, // u32
+    master_nonce: u64, // u32
     // This will always be a USDC account
 }
 //

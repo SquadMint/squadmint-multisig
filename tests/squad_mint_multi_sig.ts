@@ -137,7 +137,8 @@ describe("SquadMint Multisig program tests", () => {
     it("Can Initiate Join Request Request to join to new group - memberOpenFundWallet", async () => {
         const pda = await findPDAForAuthority(
             program.programId,
-            walletOwnerAndCreator.keyPair.publicKey, "openFundWallet"
+            walletOwnerAndCreator.keyPair.publicKey,
+            "openFundWallet"
         );
         const joinCustodialAccountPDA = await findPDAForJoinCustodialAccount(program.programId, pda, memberOpenFundWallet.keyPair.publicKey);
         const joinCustodialAccountATA = findATAForPDAForJoinCustodialAccount(program.programId, joinCustodialAccountPDA);
