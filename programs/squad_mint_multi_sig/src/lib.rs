@@ -1,16 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{
-    account_info::{ next_account_info, AccountInfo },
-    entrypoint::ProgramResult,
-    // ed25519_program,
-    // log::sol_log_compute_units,
-    program::invoke,
-    instruction::Instruction,
-    pubkey::Pubkey,
-};
 
 use anchor_spl::{
-    token::{Transfer, transfer, TransferChecked, transfer_checked , CloseAccount, close_account },
+    token::{TransferChecked, transfer_checked, CloseAccount, close_account},
     associated_token::{AssociatedToken, get_associated_token_address},
     token_interface::{Mint, TokenAccount, TokenInterface}
 };
@@ -58,7 +49,7 @@ pub mod squad_mint_multi_sig {
         let join_custodial_account = &mut ctx.accounts.join_custodial_account;
 
         require!(multisig.is_private_group, ErrorCode::OperationOnlyApplicableToPrivateGroupFund);
-        require!(multisig.members.len() <= SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE, ErrorCode::MaxMembersReached);
+        require!(multisig.members.len() < SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE, ErrorCode::MaxMembersReached);
         require_keys_eq!(multisig.owner.key(), *ctx.accounts.multisig_owner.key, ErrorCode::CannotAddMember);
         require!(!multisig.members.contains(&new_member), ErrorCode::DuplicateMember);
         require_keys_eq!(ctx.accounts.proposing_joiner.key(), new_member, ErrorCode::InvalidDestinationOwner);
@@ -248,6 +239,9 @@ pub mod squad_mint_multi_sig {
         transaction.votes = vec![true];
         transaction.did_meet_threshold = false;
         multisig.has_active_vote = true;
+
+        // TODO: Add a separate close_transaction instruction to reclaim rent after proposal is decided
+
         msg!(
             "Created TX | proposer: {} | multisig: {} | proposed_to_account: {}",
             proposer,
@@ -279,31 +273,6 @@ pub mod squad_mint_multi_sig {
             ctx.accounts.proposed_to_ata.key(),
             ErrorCode::InvalidDestinationOwner
         );
-        let (expected_multisig_ata, expected_bump) = Pubkey::find_program_address(
-            &[b"token_vault", multisig.key().as_ref()],
-            ctx.program_id,
-        );
-        require_keys_eq!(
-            expected_multisig_ata,
-            ctx.accounts.multisig_ata.key(),
-            ErrorCode::InvalidDestinationOwner
-        );
-        require!(
-            expected_bump == ctx.bumps.multisig_ata,
-            ErrorCode::InvalidDestinationOwner
-        );
-        let (gen_multisig_key, bump) = Pubkey::find_program_address(
-            &[
-                multisig.account_handle.as_bytes(),
-                multisig.owner.key().as_ref(),
-            ],
-            ctx.program_id,
-        );
-        require_keys_eq!(
-            gen_multisig_key.key(),
-            multisig.key(),
-            ErrorCode::InvalidDestinationOwner
-        );
 
         let submitter_has_voted = transaction.executors.contains(&ctx.accounts.submitter.key());
         if !submitter_has_voted {
@@ -314,21 +283,21 @@ pub mod squad_mint_multi_sig {
             msg!("Has Voted {} on Fund {} to Fund {}. The vote: {}", &ctx.accounts.submitter.key(), multisig.key(), transaction.message_data.proposed_to_account.key() , if vote { "YES" } else { "NO" })
         }
 
-        let yes_votes = transaction.votes.iter().filter(|&&v| v).count();
-        let no_votes = transaction.votes.iter().filter(|&&v| !v).count();
-        let total_members = multisig.members.len();
-        let yes_percentage = (yes_votes as f64 / total_members as f64) * 100.0f64;
-        let no_percentage = (no_votes as f64 / total_members as f64) * 100.0f64;
+        let yes_votes = transaction.votes.iter().filter(|&&v| v).count() as u64;
+        let no_votes = transaction.votes.iter().filter(|&&v| !v).count() as u64;
+        let total_members = multisig.members.len() as u64;
         let threshold = SquadMintFund::SQUAD_MINT_THRESHOLD_PERCENTAGE;
-        if yes_percentage >= threshold || no_percentage >= 50.0f64 {
+        let yes_meets = yes_votes * 100 >= threshold * total_members;
+        let no_meets = no_votes * 100 >= 50 * total_members;
+        if yes_meets || no_meets {
             msg!("threshold met closing proposal on exit");
-            transaction.did_meet_threshold = yes_percentage >= threshold;
+            transaction.did_meet_threshold = yes_meets;
             multisig.has_active_vote = false;
             multisig.master_nonce = multisig
                 .master_nonce
                 .checked_add(1)
                 .ok_or(ErrorCode::NonceOverflow)?;
-            if yes_percentage >= threshold {
+            if yes_meets {
                 msg!("Attempting to send funds to {:?} and multisig Key: {:?}", ctx.accounts.proposed_to_ata.key(), multisig.key() );
                 let amount = transaction.message_data.amount;
                 require!(ctx.accounts.multisig_ata.amount >= amount, ErrorCode::InsufficientFunds);
@@ -336,22 +305,23 @@ pub mod squad_mint_multi_sig {
                 let multisig_seeds = &[
                     multisig.account_handle.as_bytes(),
                     multisig_owner_key.as_ref(),
-                    &[bump]
+                    &[ctx.bumps.multisig]
                 ];
 
                 let signer_seeds = &[&multisig_seeds[..]];
 
-                let cpi_accounts = Transfer {
+                let cpi_accounts = TransferChecked {
                     from: ctx.accounts.multisig_ata.to_account_info(),
                     to: ctx.accounts.proposed_to_ata.to_account_info(),
                     authority: multisig.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
                 };
                 let cpi_ctx = CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
                     cpi_accounts,
                     signer_seeds,
                 );
-                transfer(cpi_ctx, amount)?;
+                transfer_checked(cpi_ctx, amount, ctx.accounts.mint.decimals)?;
 
                 msg!("TRANSFERRED {} to {}", amount, transaction.message_data.proposed_to_account);
             }
@@ -401,7 +371,7 @@ pub struct SquadMintFund {
     owner: Pubkey,     // This is the person that init creating this fund he will soon add contributors
     account_handle: String, // convert to [u8; 15]
     has_active_vote: bool,
-    is_private_group: bool,
+    is_private_group: bool, // Remove this property
     members: Vec<Pubkey>,
     join_amount: u64, // u32
     master_nonce: u64, // u32
@@ -584,9 +554,17 @@ pub struct TransactionMessage {
 
 #[derive(Accounts)]
 pub struct SubmitAndExecute<'info> {
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"proposal_tx_data", multisig.key().as_ref(), multisig.master_nonce.to_le_bytes().as_ref()],
+        bump,
+    )]
     pub transaction: Account<'info, Transaction>,
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [multisig.account_handle.as_bytes(), multisig.owner.key().as_ref()],
+        bump,
+    )]
     pub multisig: Account<'info, SquadMintFund>,
     #[account(mut)]
     pub fee_payer: Signer<'info>,
@@ -623,9 +601,9 @@ pub struct SubmitAndExecute<'info> {
 }
 
 impl SquadMintFund {
-    pub const SQUAD_MINT_MAX_HANDLE_SIZE: usize = 15;
+    pub const SQUAD_MINT_MAX_HANDLE_SIZE: usize = 15; // TODO: change this to be 8 for now
     pub const SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE: usize = 15;
-    pub const SQUAD_MINT_THRESHOLD_PERCENTAGE: f64 = 51.0;
+    pub const SQUAD_MINT_THRESHOLD_PERCENTAGE: u64 = 51;
 
     // account handle
     // + owner

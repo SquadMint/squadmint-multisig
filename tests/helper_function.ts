@@ -8,7 +8,6 @@ import {
     getOrCreateAssociatedTokenAccount, mintTo, TOKEN_PROGRAM_ID, transfer
 } from "@solana/spl-token";
 import {Connection, Keypair, PublicKey} from "@solana/web3.js";
-import {min} from "bn.js";
 
 const { utf8 } = anchor.utils.bytes
 const decimals = 6
@@ -394,7 +393,7 @@ const rejectMember = async (
         .signers([feePayer, signer.keyPair])
         .rpc();
 
-    console.log("Member added:", sig);
+    console.log("Member rejected:", sig);
     return { sig, multisigPda, joinCustodialPda };
 };
 

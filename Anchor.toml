@@ -6,8 +6,8 @@ anchor_version = "0.31.1"
 resolution = true
 skip-lint = false
 
-#[programs.localnet]
-#squad_mint_multi_sig = "BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz"
+[programs.localnet]
+squad_mint_multi_sig = "BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz"
 
 [programs.devnet]
 squad_mint_multi_sig = "BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz"
