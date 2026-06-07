@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_lang::AccountsClose;
 
 use anchor_spl::{
     token::{TransferChecked, transfer_checked, CloseAccount, close_account},
@@ -243,8 +244,8 @@ pub mod squad_mint_multi_sig {
         transaction.votes = vec![true];
         transaction.did_meet_threshold = false;
         multisig.has_active_vote = true;
-
-        // TODO: Add a separate close_transaction instruction to reclaim rent after proposal is decided
+        // This Transaction's rent is auto-reclaimed in submit_and_execute when
+        // the proposal is decided (no separate client-side close needed).
 
         msg!(
             "Created TX | proposer: {} | multisig: {} | proposed_to_account: {}",
@@ -264,9 +265,7 @@ pub mod squad_mint_multi_sig {
 
         require!(multisig.has_active_vote, ErrorCode::HasNoActiveVote);
         require!(!transaction.did_meet_threshold, ErrorCode::AlreadyExecuted);
-        // The `transaction` PDA is seed-bound to `multisig.master_nonce` (see
-        // SubmitAndExecute), so its `message_data.nonce` always equals the
-        // current master_nonce — no separate nonce check needed.
+
         require!(!multisig.members.is_empty(), ErrorCode::HasNoActiveVote);
         require_keys_eq!(
             ctx.accounts.proposed_to_owner.key(),
@@ -332,6 +331,13 @@ pub mod squad_mint_multi_sig {
                 msg!("TRANSFERRED {} to {}", amount, transaction.message_data.proposed_to_account);
             }
             msg!("Threshold met , Exiting transaction {}. Submitter: {}", transaction.key(), ctx.accounts.submitter.key());
+            // Auto-reclaim the decided proposal's rent (→ fee_payer) right
+            // here — the same close-on-completion model add/reject_member use
+            // for join_custodial_account, so the client never calls a separate
+            // close instruction. Manual (not the declarative `close =`)
+            // because the Transaction must persist across the many
+            // submit_and_execute votes and close only on the deciding one.
+            ctx.accounts.transaction.close(ctx.accounts.fee_payer.to_account_info())?;
             return Ok(());
         }
         Ok(())
@@ -608,27 +614,6 @@ pub struct SubmitAndExecute<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[derive(Accounts)]
-pub struct CloseProposal<'info> {
-    #[account(
-        seeds = [multisig.account_handle.as_bytes(), multisig.owner.key().as_ref()],
-        bump,
-    )]
-    pub multisig: Account<'info, SquadMintFund>,
-    #[account(
-        mut,
-        close = fee_payer,
-        // Belongs to this fund …
-        constraint = transaction.belongs_to_squad_mint_fund == multisig.key() @ ErrorCode::InvalidDestinationOwner,
-        // … and is decided (a later vote cycle has started), so we never
-        // close the proposal that's currently being voted on.
-        constraint = transaction.message_data.nonce < multisig.master_nonce @ ErrorCode::ProposalStillActive,
-    )]
-    pub transaction: Account<'info, Transaction>,
-    #[account(mut)]
-    pub fee_payer: Signer<'info>,
-}
-
 impl SquadMintFund {
     pub const SQUAD_MINT_MAX_HANDLE_SIZE: usize = 15; // TODO: change this to be 8 for now
     // 8 members max. Smaller cap → smaller SquadMintFund + Transaction
@@ -706,6 +691,4 @@ pub enum ErrorCode {
     JoiningAmountShouldMatchTargetWallet,
     #[msg("Fund must be created on the USDC mint")]
     InvalidMint,
-    #[msg("Proposal is still active and cannot be closed")]
-    ProposalStillActive,
 }
