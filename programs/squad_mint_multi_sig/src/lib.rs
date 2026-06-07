@@ -7,6 +7,13 @@ use anchor_spl::{
 };
 
 declare_id!("BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz");
+
+pub const USDC_MINT: Pubkey = Pubkey::from_str_const(
+    match option_env!("SQUADMINT_USDC_MINT") {
+        Some(value) => value,
+        None => "37KQMrbBtkNFYJvDKW3tGxEs1WuvqcEeu44JGrjPkYsz",
+    },
+);
 // https://github.com/pvnotpv/spl-transfer-pda-poc/blob/main/programs/spl-transfer-poc/src/lib.rs
 // https://github.com/solana-developers/program-examples/tree/main/basics/transfer-sol/native/program
 // https://github.com/solana-foundation/developer-content/blob/main/content/courses/onchain-development/anchor-pdas.md
@@ -34,7 +41,6 @@ pub mod squad_mint_multi_sig {
         fund.has_active_vote = false;
         fund.master_nonce = 0;
         fund.join_amount = join_amount;
-        fund.is_private_group = true;                               // We will use this later (Maybe)
         fund.account_handle = account_handle.to_string();           // There might be no need to save this value
 
         Ok(())
@@ -48,7 +54,6 @@ pub mod squad_mint_multi_sig {
         let multisig = &mut ctx.accounts.multisig;
         let join_custodial_account = &mut ctx.accounts.join_custodial_account;
 
-        require!(multisig.is_private_group, ErrorCode::OperationOnlyApplicableToPrivateGroupFund);
         require!(multisig.members.len() < SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE, ErrorCode::MaxMembersReached);
         require_keys_eq!(multisig.owner.key(), *ctx.accounts.multisig_owner.key, ErrorCode::CannotAddMember);
         require!(!multisig.members.contains(&new_member), ErrorCode::DuplicateMember);
@@ -115,7 +120,6 @@ pub mod squad_mint_multi_sig {
         let multisig = &mut ctx.accounts.multisig;
         let join_custodial_account = &mut ctx.accounts.join_custodial_account;
 
-        require!(multisig.is_private_group, ErrorCode::OperationOnlyApplicableToPrivateGroupFund);
         require_keys_eq!(multisig.owner.key(), *ctx.accounts.multisig_owner.key, ErrorCode::CannotAddMember);
         require_keys_eq!(join_custodial_account.request_to_join_user.key(), ctx.accounts.proposing_joiner.key(), ErrorCode::InvalidDestinationOwner);
         require!(!multisig.members.contains(&new_member), ErrorCode::DuplicateMember);
@@ -260,7 +264,9 @@ pub mod squad_mint_multi_sig {
 
         require!(multisig.has_active_vote, ErrorCode::HasNoActiveVote);
         require!(!transaction.did_meet_threshold, ErrorCode::AlreadyExecuted);
-        require!(transaction.message_data.nonce == multisig.master_nonce, ErrorCode::AlreadyExecutedInvalidNonce);
+        // The `transaction` PDA is seed-bound to `multisig.master_nonce` (see
+        // SubmitAndExecute), so its `message_data.nonce` always equals the
+        // current master_nonce — no separate nonce check needed.
         require!(!multisig.members.is_empty(), ErrorCode::HasNoActiveVote);
         require_keys_eq!(
             ctx.accounts.proposed_to_owner.key(),
@@ -330,6 +336,7 @@ pub mod squad_mint_multi_sig {
         }
         Ok(())
     }
+
 }
 
 #[derive(Accounts)]
@@ -347,6 +354,9 @@ pub struct Initialize<'info> {
         space = 8 + SquadMintFund::MAX_SIZE
     )]
     pub multisig: Account<'info, SquadMintFund>,
+    #[account(
+        constraint = mint.key() == USDC_MINT @ ErrorCode::InvalidMint
+    )]
     pub mint: InterfaceAccount<'info, Mint>,
     #[account(
         init,
@@ -371,11 +381,9 @@ pub struct SquadMintFund {
     owner: Pubkey,     // This is the person that init creating this fund he will soon add contributors
     account_handle: String, // convert to [u8; 15]
     has_active_vote: bool,
-    is_private_group: bool, // Remove this property
     members: Vec<Pubkey>,
     join_amount: u64, // u32
     master_nonce: u64, // u32
-    // This will always be a USDC account
 }
 //
 #[derive(Accounts)]
@@ -600,40 +608,69 @@ pub struct SubmitAndExecute<'info> {
     pub system_program: Program<'info, System>,
 }
 
-impl SquadMintFund {
-    pub const SQUAD_MINT_MAX_HANDLE_SIZE: usize = 15; // TODO: change this to be 8 for now
-    pub const SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE: usize = 15;
-    pub const SQUAD_MINT_THRESHOLD_PERCENTAGE: u64 = 51;
-
-    // account handle
-    // + owner
-    // + 15 member max vector pubkey
-    pub const MAX_SIZE: usize = (4 + SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE) + size_of::<SquadMintFund>() + (4 + (SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE * size_of::<Pubkey>()));
+#[derive(Accounts)]
+pub struct CloseProposal<'info> {
+    #[account(
+        seeds = [multisig.account_handle.as_bytes(), multisig.owner.key().as_ref()],
+        bump,
+    )]
+    pub multisig: Account<'info, SquadMintFund>,
+    #[account(
+        mut,
+        close = fee_payer,
+        // Belongs to this fund …
+        constraint = transaction.belongs_to_squad_mint_fund == multisig.key() @ ErrorCode::InvalidDestinationOwner,
+        // … and is decided (a later vote cycle has started), so we never
+        // close the proposal that's currently being voted on.
+        constraint = transaction.message_data.nonce < multisig.master_nonce @ ErrorCode::ProposalStillActive,
+    )]
+    pub transaction: Account<'info, Transaction>,
+    #[account(mut)]
+    pub fee_payer: Signer<'info>,
 }
 
-//
+impl SquadMintFund {
+    pub const SQUAD_MINT_MAX_HANDLE_SIZE: usize = 15; // TODO: change this to be 8 for now
+    // 8 members max. Smaller cap → smaller SquadMintFund + Transaction
+    // accounts → less upfront rent at fund/proposal creation.
+    pub const SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE: usize = 8;
+    pub const SQUAD_MINT_THRESHOLD_PERCENTAGE: u64 = 51;
+
+    // Borsh on-chain byte budget. The 8-byte account discriminator is added
+    // separately at the `space = 8 + MAX_SIZE` constraint.
+    pub const MAX_SIZE: usize =
+        32                                                      // owner
+        + (4 + Self::SQUAD_MINT_MAX_HANDLE_SIZE)                // account_handle: 4-byte len + bytes
+        + 1                                                     // has_active_vote
+        + (4 + Self::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE * 32)    // members: 4-byte len + pubkeys
+        + 8                                                     // join_amount
+        + 8;                                                    // master_nonce
+}
+
 impl TransactionMessage {
-    pub const SIZE: usize = size_of::<TransactionMessage>();
+    // amount + proposer_account + proposed_to_account + nonce
+    pub const SIZE: usize = 8 + 32 + 32 + 8;
 }
 
 impl JoinRequestCustodialWallet {
-    pub const MAX_SIZE: usize = size_of::<JoinRequestCustodialWallet>();
+    // request_to_join_squad_mint_fund + request_to_join_user + join_amount
+    pub const MAX_SIZE: usize = 32 + 32 + 8;
 }
 
 impl Transaction {
     pub const MAX_SIZE: usize =
-            size_of::<Transaction>() +
-            (4 + (SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE * size_of::<Pubkey>())) +    // approved_signers
-            (4 + (SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE * size_of::<[u8; 64]>())) +  // signatures
-            TransactionMessage::SIZE
-    ;
+        32                                                          // belongs_to_squad_mint_fund
+        + (4 + SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE * 32) // executors: len + pubkeys
+        + (4 + SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE)      // votes: len + 1 byte/bool
+        + TransactionMessage::SIZE                                    // message_data
+        + 1;                                                         // did_meet_threshold
 }
 
 #[error_code]
 pub enum ErrorCode {
     #[msg("Handle length is not valid")]
     HandleLenNotValid,
-    #[msg("Member count should not exceed 15")]
+    #[msg("Member count should not exceed 8")]
     MaxMembersReached,
     #[msg("This member already exists in this group")]
     DuplicateMember,
@@ -667,4 +704,8 @@ pub enum ErrorCode {
     InsufficientJoiningAmount,
     #[msg("Joining amount must be equal to that specified my by the wallet")]
     JoiningAmountShouldMatchTargetWallet,
+    #[msg("Fund must be created on the USDC mint")]
+    InvalidMint,
+    #[msg("Proposal is still active and cannot be closed")]
+    ProposalStillActive,
 }

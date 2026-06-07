@@ -206,7 +206,6 @@ const checkAccountFieldsAreInitializedCorrectly = async (
     expect(fund.owner.toBase58()).to.equal(walletOwner.toBase58());
     expect(fund.accountHandle).to.equal(accountHandle);
     expect(fund.hasActiveVote).to.be.false;
-    expect(fund.isPrivateGroup).to.be.true;
     expect(fund.members).to.have.lengthOf(1);
     expect(fund.members[0].toBase58()).to.equal(walletOwner.toBase58());
     expect(fund.masterNonce.eq(new BN(expectedMasterNonce))).to.be.true;
@@ -216,17 +215,33 @@ const checkAccountFieldsAreInitializedCorrectly = async (
 
     return fund;
 };
+// Fixed mint keypair so the test mint address always equals the program's
+// pinned USDC_MINT const (37KQMrbBtkNFYJvDKW3tGxEs1WuvqcEeu44JGrjPkYsz).
+// `initialize` rejects any other mint, so this must match the const in
+// programs/squad_mint_multi_sig/src/lib.rs. (Fresh localnet per `anchor
+// test`, so re-creating the same mint address each run is fine.)
+const USDC_MINT_KEYPAIR = anchor.web3.Keypair.fromSecretKey(
+    Uint8Array.from([
+        210, 40, 28, 92, 229, 219, 114, 103, 145, 62, 217, 155, 249, 74, 11, 10,
+        251, 253, 161, 193, 126, 149, 95, 42, 223, 199, 95, 89, 84, 139, 245, 90,
+        31, 85, 170, 177, 15, 252, 17, 17, 71, 117, 214, 26, 224, 159, 91, 94, 8,
+        163, 199, 52, 77, 141, 3, 95, 238, 223, 130, 19, 49, 141, 254, 1,
+    ])
+);
+
  async function createTestMint(
     connection: anchor.web3.Connection,
     payer: anchor.web3.Keypair,
 ) {
-    // Create a new mint
+    // Create the mint at the fixed USDC keypair so its address matches the
+    // program's pinned USDC_MINT const.
     const mintPubkey = await createMint(
         connection,
         payer,        // payer for transaction & rent
         payer.publicKey,        // mint authority
         payer.publicKey,        // freeze authority (optional)
-        decimals
+        decimals,
+        USDC_MINT_KEYPAIR,      // deterministic mint address == USDC_MINT
     );
 
     const tokenAccount = await getOrCreateAssociatedTokenAccount(
