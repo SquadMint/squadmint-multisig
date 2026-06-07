@@ -24,6 +24,7 @@ import {
 } from "./helper_function";
 
 import {PublicKey} from "@solana/web3.js";
+import {getSharedCtx} from "./shared_setup";
 import {
     Account, ASSOCIATED_TOKEN_PROGRAM_ID,
     getAccount,
@@ -44,9 +45,12 @@ let testMint: { mintPubkey: PublicKey; tokenAccountPubkey: PublicKey }
 before(async () => {
     chaiAsPromised = await import("chai-as-promised");
     chai.use(chaiAsPromised.default);
-    squadMintFeePayer = await createFeePayerWallet(connection, 5);
 
-    testMint = await createTestMint(connection, squadMintFeePayer)
+    // Shared fee payer (= mint authority) + pinned mint, created once and
+    // reused by hacker_tests.ts (the program allows only one mint address).
+    const ctx = await getSharedCtx(connection);
+    squadMintFeePayer = ctx.feePayer;
+    testMint = ctx.testMint;
 
     memberOpenFundWallet = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 5);
     memberOpenFundWallet2 = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
@@ -414,19 +418,61 @@ describe("SquadMint Multisig program tests", () => {
         expect(feePayerSolMut).to.gt(feePayerSol); // LAZY but its enough for now
     });
 
-    /// Needs use to test initializing 15 accounts and funding and adding these accounts
-    it.skip("try to add more than 15 uninitialized member wallets to openFundWallet2 should be rejected", async () => {
-        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet2");
-        let unInitializedMember = anchor.web3.Keypair.generate();
-        const addMember = program.methods.addMember(unInitializedMember.publicKey)
-            .accounts({
-                multisig: pda,
-                multisigOwner: walletOwnerAndCreator.keyPair.publicKey
-            })
-            .signers([walletOwnerAndCreator.keyPair])
-            .rpc()
+    it("Caps membership at 8: owner + 7 accepted joins; the 8th acceptance is rejected (MaxMembersReached)", async () => {
+        const owner = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
+        const handle = "capFund8";
+        const pda = await initializeAccount(program, owner.keyPair, squadMintFeePayer, testMint.mintPubkey, handle);
 
-        expect(addMember).to.be.rejectedWith(/MaxMembersReached/);
+        const joinAmount = new BN(amountToSmalletDecimal(1.11));
+
+        // Owner is member #1; accept 7 joiners to fill the fund to the cap of 8.
+        for (let i = 0; i < 7; i++) {
+            const joiner = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
+            await initiateJoinRequest(program, pda, joiner, joinAmount, squadMintFeePayer, testMint.mintPubkey);
+            const joinCustodialPda = await findPDAForJoinCustodialAccount(program.programId, pda, joiner.keyPair.publicKey);
+            await addMember(program, pda, joinCustodialPda, joiner, owner, owner, squadMintFeePayer, testMint.mintPubkey);
+        }
+
+        const full = await program.account.squadMintFund.fetch(pda);
+        expect(full.members).to.have.lengthOf(8);
+
+        // An 8th joiner can still escrow a join request, but accepting it would
+        // make 9 members -> rejected by the cap.
+        const overflowJoiner = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
+        await initiateJoinRequest(program, pda, overflowJoiner, joinAmount, squadMintFeePayer, testMint.mintPubkey);
+        const overflowCustodialPda = await findPDAForJoinCustodialAccount(program.programId, pda, overflowJoiner.keyPair.publicKey);
+
+        const overflow = addMember(program, pda, overflowCustodialPda, overflowJoiner, owner, owner, squadMintFeePayer, testMint.mintPubkey);
+        await expect(overflow).to.be.rejectedWith(/MaxMembersReached/);
+
+        const stillFull = await program.account.squadMintFund.fetch(pda);
+        expect(stillFull.members).to.have.lengthOf(8);
+    });
+
+    it("Only the fund owner can accept a join request (a non-owner member is rejected)", async () => {
+        const owner = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
+        const handle = "ownerOnlyAccept";
+        const pda = await initializeAccount(program, owner.keyPair, squadMintFeePayer, testMint.mintPubkey, handle);
+
+        const joinAmount = new BN(amountToSmalletDecimal(1.11));
+
+        // Owner adds one legitimate member (memberA).
+        const memberA = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
+        await initiateJoinRequest(program, pda, memberA, joinAmount, squadMintFeePayer, testMint.mintPubkey);
+        const memberACustodial = await findPDAForJoinCustodialAccount(program.programId, pda, memberA.keyPair.publicKey);
+        await addMember(program, pda, memberACustodial, memberA, owner, owner, squadMintFeePayer, testMint.mintPubkey);
+
+        // A new joiner requests to join; memberA (a member, but NOT the owner)
+        // tries to accept -> the UpdateFund owner constraint rejects it.
+        const joiner = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
+        await initiateJoinRequest(program, pda, joiner, joinAmount, squadMintFeePayer, testMint.mintPubkey);
+        const joinerCustodial = await findPDAForJoinCustodialAccount(program.programId, pda, joiner.keyPair.publicKey);
+
+        const attempt = addMember(program, pda, joinerCustodial, joiner, memberA, memberA, squadMintFeePayer, testMint.mintPubkey);
+        await expect(attempt).to.be.rejected;
+
+        const fund = await program.account.squadMintFund.fetch(pda);
+        expect(fund.members).to.have.lengthOf(2); // still only owner + memberA
     });
 
     it("When adding an existing member then should be rejected", async () => {
@@ -615,7 +661,7 @@ describe("SquadMint Multisig program tests", () => {
                 feePayer: squadMintFeePayer.publicKey,
                 submitter: walletOwnerAndCreator.keyPair.publicKey,
                 mint: testMint.mintPubkey,
-                proposedToOwner: oFundTxProposal.messageData.proposedToAccount,
+                proposedToOwner: proposedToWallet.keyPair.publicKey,
                 multisigAta: ata,
                 proposedToAta: proposedToAta,
                 tokenProgram: TOKEN_PROGRAM_ID,
@@ -626,7 +672,6 @@ describe("SquadMint Multisig program tests", () => {
             .rpc()
 
         const multisig = await program.account.squadMintFund.fetch(pda);
-        const fundTx = await program.account.transaction.fetch(transactionDataPDA);
 
         const ataAccountUpdated = await getAccount(connection, ata);
         console.log("🔥 New amount " + ataAccountUpdated.amount.toString())
@@ -638,16 +683,13 @@ describe("SquadMint Multisig program tests", () => {
         expect(ataAccountUpdated.amount).to.equal(expectedBalance);
         expect(multisig.hasActiveVote).to.be.false
         expect(multisig.masterNonce.eq(new anchor.BN(1))).to.be.true
-        expect(fundTx.didMeetThreshold).to.be.eq(true)
-        expect(fundTx.votes).to.not.be.empty;
-        expect(fundTx.executors[0].toBase58())
-            .to.equal(memberOpenFundWallet.keyPair.publicKey.toBase58());
-        expect(fundTx.executors[1].toBase58())
-            .to.equal(walletOwnerAndCreator.keyPair.publicKey.toBase58());
-        expect(fundTx.votes[0])
-            .to.equal(true);
-        expect(fundTx.votes[1])
-            .to.equal(true);
+
+        // The proposal is auto-closed once it's decided: its rent is reclaimed
+        // and the account no longer exists. The YES decision is proven by its
+        // effects above (funds moved, nonce bumped, active vote cleared).
+        await expect(
+            program.account.transaction.fetch(transactionDataPDA)
+        ).to.be.rejected;
     });
 
     it("Reject proposal when ATA doesn't have enough funds ", async () => {
@@ -773,7 +815,6 @@ describe("SquadMint Multisig program tests", () => {
 
 
         const multisig = await program.account.squadMintFund.fetch(pda);
-        const fundTx = await program.account.transaction.fetch(transactionDataPDA);
 
         expect(f.votes[0])
             .to.equal(true);
@@ -782,16 +823,12 @@ describe("SquadMint Multisig program tests", () => {
         expect(multisig.hasActiveVote).to.be.false
         expect(multisig.masterNonce.eq(new anchor.BN(1))).to.be.true
 
-        expect(fundTx.didMeetThreshold).to.be.eq(false)
-        expect(fundTx.votes).to.not.be.empty;
-        expect(fundTx.executors[0].toBase58())
-            .to.equal(walletOwnerAndCreator2.keyPair.publicKey.toBase58());
-        expect(fundTx.executors[1].toBase58())
-            .to.equal(memberOpenFundWallet2.keyPair.publicKey.toBase58());
-        expect(fundTx.votes[0])
-            .to.equal(true);
-        expect(fundTx.votes[1])
-            .to.equal(false);
+        // A rejected (NO-meets) proposal is auto-closed too. No transfer
+        // happened — the vault balance is unchanged above — and the proposal
+        // account is gone.
+        await expect(
+            program.account.transaction.fetch(transactionDataPDA)
+        ).to.be.rejected;
     });
 
 
@@ -802,8 +839,9 @@ describe("SquadMint Multisig program tests", () => {
         const openFundWallet = await program.account.squadMintFund.fetch(pda);
         const transactionDataPDA = await findPDAForMultisigTransaction(program.programId, pda, "openFundWallet", new BN(0)); // 0 is closed and decided
         const multisigAta = await findATAForPDAForAuthority(pda, testMint.mintPubkey);
-        const oFundTxProposal = await program.account.transaction.fetch(transactionDataPDA);
-        const proposedToAta = await findATAForPDAForAuthority(oFundTxProposal.messageData.proposedToAccount, testMint.mintPubkey)
+        // nonce 0 was decided and is now auto-closed, so its account no longer
+        // exists — derive the recipient ATA from proposedToWallet directly.
+        const proposedToAta = await findATAForPDAForAuthority(proposedToWallet.keyPair.publicKey, testMint.mintPubkey)
         let vote = program.methods.submitAndExecute(true)
             .accounts({
                 transaction: transactionDataPDA,
@@ -811,7 +849,7 @@ describe("SquadMint Multisig program tests", () => {
                 feePayer: squadMintFeePayer.publicKey,
                 submitter: walletOwnerAndCreator.keyPair.publicKey,
                 mint: testMint.mintPubkey,
-                proposedToOwner: oFundTxProposal.messageData.proposedToAccount,
+                proposedToOwner: proposedToWallet.keyPair.publicKey,
                 multisigAta: ata,
                 proposedToAta: proposedToAta,
                 tokenProgram: TOKEN_PROGRAM_ID,
@@ -832,8 +870,9 @@ describe("SquadMint Multisig program tests", () => {
         const openFundWallet = await program.account.squadMintFund.fetch(pda);
         const transactionDataPDA = await findPDAForMultisigTransaction(program.programId, pda, "openFundWallet", new BN(0)); // 0 is closed and decided
         const multisigAta = await findATAForPDAForAuthority(pda, testMint.mintPubkey);
-        const oFundTxProposal = await program.account.transaction.fetch(transactionDataPDA);
-        const proposedToAta = await findATAForPDAForAuthority(oFundTxProposal.messageData.proposedToAccount, testMint.mintPubkey)
+        // nonce 0 was decided and is now auto-closed, so its account no longer
+        // exists — derive the recipient ATA from proposedToWallet directly.
+        const proposedToAta = await findATAForPDAForAuthority(proposedToWallet.keyPair.publicKey, testMint.mintPubkey)
         let vote = program.methods.submitAndExecute(false)
             .accounts({
                 transaction: transactionDataPDA,
@@ -841,7 +880,7 @@ describe("SquadMint Multisig program tests", () => {
                 feePayer: squadMintFeePayer.publicKey,
                 submitter: walletOwnerAndCreator.keyPair.publicKey,
                 mint: testMint.mintPubkey,
-                proposedToOwner: oFundTxProposal.messageData.proposedToAccount,
+                proposedToOwner: proposedToWallet.keyPair.publicKey,
                 multisigAta: ata,
                 proposedToAta: proposedToAta,
                 tokenProgram: TOKEN_PROGRAM_ID,
@@ -1099,12 +1138,11 @@ describe("SquadMint Multisig program tests", () => {
         expect(fundAfterThreshold.hasActiveVote).to.be.false;
         expect(fundAfterThreshold.masterNonce.eq(new BN(3))).to.be.true;
 
-        const txFinal = await program.account.transaction.fetch(transactionDataPDA);
-        expect(txFinal.didMeetThreshold).to.be.true;
-        expect(txFinal.votes).to.have.lengthOf(3);
-        expect(txFinal.votes[0]).to.equal(true);
-        expect(txFinal.votes[1]).to.equal(false);
-        expect(txFinal.votes[2]).to.equal(true);
+        // Threshold met -> proposal auto-closed; verify by its effects (nonce
+        // bumped + vault debited) rather than reading the now-gone account.
+        await expect(
+            program.account.transaction.fetch(transactionDataPDA)
+        ).to.be.rejected;
 
         const multisigAtaAfter = await getAccount(connection, ata);
         expect(multisigAtaAfter.amount).to.equal(multisigAtaBefore.amount - BigInt(proposalAmount.toString()));
