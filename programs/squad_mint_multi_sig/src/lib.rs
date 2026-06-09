@@ -9,20 +9,20 @@ use anchor_spl::{
 
 declare_id!("BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz");
 
+#[cfg(feature = "mainnet")]
+pub const USDC_MINT: Pubkey = Pubkey::from_str_const(env!(
+    "SQUADMINT_USDC_MINT",
+    "mainnet builds must set SQUADMINT_USDC_MINT (e.g. EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v)"
+));
+
+#[cfg(not(feature = "mainnet"))]
 pub const USDC_MINT: Pubkey = Pubkey::from_str_const(
     match option_env!("SQUADMINT_USDC_MINT") {
         Some(value) => value,
         None => "37KQMrbBtkNFYJvDKW3tGxEs1WuvqcEeu44JGrjPkYsz",
     },
 );
-// https://github.com/pvnotpv/spl-transfer-pda-poc/blob/main/programs/spl-transfer-poc/src/lib.rs
-// https://github.com/solana-developers/program-examples/tree/main/basics/transfer-sol/native/program
-// https://github.com/solana-foundation/developer-content/blob/main/content/courses/onchain-development/anchor-pdas.md
-// https://www.anchor-lang.com/docs/references/account-constraints#accounthas_one--target
-// https://www.anchor-lang.com/docs/references/account-constraints#accounttoken
-// https://beta.solpg.io/https://github.com/solana-developers/anchor-examples/tree/main/account-constraints/toke
-// https://solana.com/developers/cookbook/wallets/sign-message
-// https://solana.stackexchange.com/questions/20848/encountering-an-account-required-by-the-instruction-is-missing-error-with-ed25
+
 // TODO: check is we need emit certain events as well to capture off app actions (FUTURE)
 // Add checkes for the mints are as expected
 #[program]
@@ -34,7 +34,7 @@ pub mod squad_mint_multi_sig {
         if account_handle.len() == 0 || account_handle.len() > SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE {
             return Err(error!(ErrorCode::HandleLenNotValid));
         }
-        require!(join_amount > 100000, ErrorCode::InsufficientJoiningAmount);
+        require!(join_amount >= SquadMintFund::SQUAD_MINT_MIN_AMOUNT, ErrorCode::InsufficientJoiningAmount);
         let fund = &mut ctx.accounts.multisig;
         msg!("Account address: {} ", fund.key());
         fund.owner = *ctx.accounts.multisig_owner.key;
@@ -42,7 +42,7 @@ pub mod squad_mint_multi_sig {
         fund.has_active_vote = false;
         fund.master_nonce = 0;
         fund.join_amount = join_amount;
-        fund.account_handle = account_handle.to_string();           // There might be no need to save this value
+        fund.account_handle = account_handle.to_string();
 
         Ok(())
     }
@@ -209,7 +209,7 @@ pub mod squad_mint_multi_sig {
         join_custodial_account.request_to_join_user = proposing_joiner.key();
         join_custodial_account.join_amount = join_amount;
         join_custodial_account.request_to_join_squad_mint_fund = multisig.key();
-        
+
         Ok(())
     }
 
@@ -231,6 +231,7 @@ pub mod squad_mint_multi_sig {
          );
         require!(!multisig.has_active_vote, ErrorCode::CanOnlyInitOneVoteAtATime);
         require!(multisig.members.contains(&proposer), ErrorCode::MemberNotPartOfFund);
+        require!(amount >= SquadMintFund::SQUAD_MINT_MIN_AMOUNT, ErrorCode::InvalidProposalAmount);
         require!(ctx.accounts.multisig_ata.amount >= amount, ErrorCode::InsufficientFunds); // v2 will have this check as joining fee will add money here
 
         transaction.belongs_to_squad_mint_fund = multisig.key();
@@ -267,6 +268,7 @@ pub mod squad_mint_multi_sig {
         require!(!transaction.did_meet_threshold, ErrorCode::AlreadyExecuted);
 
         require!(!multisig.members.is_empty(), ErrorCode::HasNoActiveVote);
+        require_keys_eq!(transaction.belongs_to_squad_mint_fund, multisig.key(), ErrorCode::ProposalFundMismatch);
         require_keys_eq!(
             ctx.accounts.proposed_to_owner.key(),
             transaction.message_data.proposed_to_account,
@@ -291,9 +293,11 @@ pub mod squad_mint_multi_sig {
         let yes_votes = transaction.votes.iter().filter(|&&v| v).count() as u64;
         let no_votes = transaction.votes.iter().filter(|&&v| !v).count() as u64;
         let total_members = multisig.members.len() as u64;
-        let threshold = SquadMintFund::SQUAD_MINT_THRESHOLD_PERCENTAGE;
-        let yes_meets = yes_votes * 100 >= threshold * total_members;
-        let no_meets = no_votes * 100 >= 50 * total_members;
+
+        let yes_threshold = SquadMintFund::SQUAD_MINT_YES_THRESHOLD_PERCENTAGE;
+        let no_threshold = SquadMintFund::SQUAD_MINT_NO_THRESHOLD_PERCENTAGE;
+        let yes_meets = yes_votes * 100 >= yes_threshold * total_members;
+        let no_meets = no_votes * 100 >= no_threshold * total_members;
         if yes_meets || no_meets {
             msg!("threshold met closing proposal on exit");
             transaction.did_meet_threshold = yes_meets;
@@ -331,12 +335,6 @@ pub mod squad_mint_multi_sig {
                 msg!("TRANSFERRED {} to {}", amount, transaction.message_data.proposed_to_account);
             }
             msg!("Threshold met , Exiting transaction {}. Submitter: {}", transaction.key(), ctx.accounts.submitter.key());
-            // Auto-reclaim the decided proposal's rent (→ fee_payer) right
-            // here — the same close-on-completion model add/reject_member use
-            // for join_custodial_account, so the client never calls a separate
-            // close instruction. Manual (not the declarative `close =`)
-            // because the Transaction must persist across the many
-            // submit_and_execute votes and close only on the deciding one.
             ctx.accounts.transaction.close(ctx.accounts.fee_payer.to_account_info())?;
             return Ok(());
         }
@@ -615,11 +613,17 @@ pub struct SubmitAndExecute<'info> {
 }
 
 impl SquadMintFund {
-    pub const SQUAD_MINT_MAX_HANDLE_SIZE: usize = 15; // TODO: change this to be 8 for now
+    pub const SQUAD_MINT_MAX_HANDLE_SIZE: usize = 15;
     // 8 members max. Smaller cap → smaller SquadMintFund + Transaction
     // accounts → less upfront rent at fund/proposal creation.
     pub const SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE: usize = 8;
-    pub const SQUAD_MINT_THRESHOLD_PERCENTAGE: u64 = 51;
+    // M-3: intentionally asymmetric quorum. Spending needs a 51% "yes"
+    // supermajority (deliberately hard to withdraw); a 50% "no" can reject.
+    pub const SQUAD_MINT_YES_THRESHOLD_PERCENTAGE: u64 = 51;
+    pub const SQUAD_MINT_NO_THRESHOLD_PERCENTAGE: u64 = 50;
+    // Shared minimum for join deposits and proposal payouts (no zero/dust amounts).
+    // USDC has 6 decimals, so 100_000 base units = 0.1 USDC.
+    pub const SQUAD_MINT_MIN_AMOUNT: u64 = 100_000;
 
     // Borsh on-chain byte budget. The 8-byte account discriminator is added
     // separately at the `space = 8 + MAX_SIZE` constraint.
@@ -691,4 +695,8 @@ pub enum ErrorCode {
     JoiningAmountShouldMatchTargetWallet,
     #[msg("Fund must be created on the USDC mint")]
     InvalidMint,
+    #[msg("Proposal does not belong to this fund")]
+    ProposalFundMismatch,
+    #[msg("Proposal amount is below the minimum")]
+    InvalidProposalAmount,
 }

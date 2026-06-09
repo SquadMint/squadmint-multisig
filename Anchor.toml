@@ -30,4 +30,4 @@ test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
 # `initialize`. Plain `anchor build` / `anchor test` (no env) falls back to
 # the committed test mint. Run via `anchor run build-devnet` / `build-prod`.
 build-devnet = "SQUADMINT_USDC_MINT=GHCrkDPkTDigsEXMctzEsWc48nWPufcgaqqK4vexQX1f anchor build"
-build-prod = "SQUADMINT_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v anchor build"
+build-prod = "SQUADMINT_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v anchor build -- --features mainnet"
