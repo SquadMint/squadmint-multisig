@@ -27,10 +27,12 @@ import {PublicKey} from "@solana/web3.js";
 import {getSharedCtx} from "./shared_setup";
 import {
     Account, ASSOCIATED_TOKEN_PROGRAM_ID,
+    closeAccount,
     getAccount,
     getAssociatedTokenAddress,
     getOrCreateAssociatedTokenAccount, mintTo,
-    TOKEN_PROGRAM_ID
+    TOKEN_PROGRAM_ID,
+    transfer
 } from "@solana/spl-token";
 const program = anchor.workspace.SquadMintMultiSig as Program<SquadMintMultiSig>;
 const connection = anchor.getProvider().connection;
@@ -41,6 +43,10 @@ let memberOpenFundWallet: WalletWithAta;
 let memberOpenFundWallet2: WalletWithAta;
 let proposedToWallet: WalletWithAta;
 let testMint: { mintPubkey: PublicKey; tokenAccountPubkey: PublicKey }
+
+// Program-enforced minimum (SquadMintFund::SQUAD_MINT_MIN_AMOUNT = 100_000
+// base units = 0.1 USDC). Proposals below this are rejected (InvalidProposalAmount).
+const MIN_PROPOSAL = new anchor.BN(100_000);
 
 before(async () => {
     chaiAsPromised = await import("chai-as-promised");
@@ -514,7 +520,7 @@ describe("SquadMint Multisig program tests", () => {
             openFundWallet.masterNonce
         )
         console.log("🔥 This is the PDA of the new transaction " + transactionDataPDA.toBase58())
-        let amount = new anchor.BN(1);
+        let amount = MIN_PROPOSAL;
         await program
             .methods
             .createProposal(amount, proposedToWallet.keyPair.publicKey).accounts({
@@ -564,7 +570,7 @@ describe("SquadMint Multisig program tests", () => {
         const ataAccount = await getAccount(connection, ata);
         const currentAmount = ataAccount.amount
 
-        let amount = new anchor.BN(1);
+        let amount = MIN_PROPOSAL;
         let createRejectionProposal = program
             .methods
             .createProposal(amount, proposedToWallet.keyPair.publicKey).accounts({
@@ -606,7 +612,7 @@ describe("SquadMint Multisig program tests", () => {
         )
 
         console.log("🔥 This is the PDA of the new transaction " + transactionDataPDA.toBase58())
-        let amount = new anchor.BN(1);
+        let amount = MIN_PROPOSAL;
         let createRejectionProposal = program
             .methods
             .createProposal(amount, proposedToWallet.keyPair.publicKey).accounts({
@@ -645,7 +651,7 @@ describe("SquadMint Multisig program tests", () => {
         const proposedToAta = await findATAForPDAForAuthority(oFundTxProposal.messageData.proposedToAccount, testMint.mintPubkey)
 
         // First check if everything is expected
-        expect(oFundTxProposal.messageData.amount.eq(new BN(1))).to.be.true;
+        expect(oFundTxProposal.messageData.amount.eq(MIN_PROPOSAL)).to.be.true;
         expect(oFundTxProposal.messageData.nonce.eq(new BN(openFundWallet.masterNonce))).to.be.true;
         expect(oFundTxProposal.messageData.proposerAccount.toBase58())
             .to.equal(memberOpenFundWallet.keyPair.publicKey.toBase58());
@@ -702,7 +708,9 @@ describe("SquadMint Multisig program tests", () => {
         expect(openFundWallet.members).to.have.lengthOf(1);
         const multisigAccount = await getAccount(connection, ata)
 
-        let amount = new anchor.BN(1);
+        // Must be >= the program minimum so the rejection below is specifically
+        // InsufficientFunds (the empty vault), not InvalidProposalAmount.
+        let amount = MIN_PROPOSAL;
         const proposal = program
             .methods
             .createProposal(amount, proposedToWallet.keyPair.publicKey).accounts({
@@ -740,7 +748,7 @@ describe("SquadMint Multisig program tests", () => {
         expect(multisigAccount.amount).to.equal(BigInt(0));
 
         await transferTokens(connection, squadMintFeePayer, walletOwnerAndCreator.ataAccount.address, ata, walletOwnerAndCreator.keyPair, 2)
-        let amount = new anchor.BN(1);
+        let amount = MIN_PROPOSAL;
 
         await program
             .methods
@@ -1062,7 +1070,7 @@ describe("SquadMint Multisig program tests", () => {
             program.programId, pda, "openFundWallet", fundWith3.masterNonce
         );
 
-        const proposalAmount = new anchor.BN(1);
+        const proposalAmount = MIN_PROPOSAL;
         await program.methods
             .createProposal(proposalAmount, proposedToWallet.keyPair.publicKey)
             .accounts({
@@ -1161,7 +1169,7 @@ describe("SquadMint Multisig program tests", () => {
 
         // Create an active proposal on someOtherFund
         await program.methods
-            .createProposal(new anchor.BN(1), proposedToWallet.keyPair.publicKey)
+            .createProposal(MIN_PROPOSAL, proposedToWallet.keyPair.publicKey)
             .accounts({
                 transaction: someOtherTxPDA,
                 multisig: someOtherPda,
@@ -1200,5 +1208,108 @@ describe("SquadMint Multisig program tests", () => {
             .rpc();
 
         await expect(result).to.be.rejected;
+    });
+
+    // ==================== Proposal Amount & Destination Validation ====================
+
+    it("Reject dust proposal below the program minimum (InvalidProposalAmount)", async () => {
+        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet");
+        const ata = await findATAForPDAForAuthority2(program.programId, pda);
+
+        const fund = await program.account.squadMintFund.fetch(pda);
+        expect(fund.hasActiveVote).to.be.false;
+        const transactionDataPDA = await findPDAForMultisigTransaction(
+            program.programId, pda, "openFundWallet", fund.masterNonce
+        );
+
+        const dust = program.methods
+            .createProposal(new anchor.BN(1), proposedToWallet.keyPair.publicKey)
+            .accounts({
+                transaction: transactionDataPDA,
+                multisig: pda,
+                feePayer: squadMintFeePayer.publicKey,
+                proposer: walletOwnerAndCreator.keyPair.publicKey,
+                mint: testMint.mintPubkey,
+                proposedToOwner: proposedToWallet.keyPair.publicKey,
+                multisigAta: ata,
+                proposedToAta: proposedToWallet.ataAccount.address,
+                tokenProgram: TOKEN_PROGRAM_ID,
+                associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+                systemProgram: anchor.web3.SystemProgram.programId
+            })
+            .signers([squadMintFeePayer, walletOwnerAndCreator.keyPair])
+            .rpc();
+
+        await expect(dust).to.be.rejectedWith(/InvalidProposalAmount/);
+
+        const fundAfter = await program.account.squadMintFund.fetch(pda);
+        expect(fundAfter.hasActiveVote).to.be.false; // slot not consumed
+    });
+
+    it("Reject proposal when proposed_to_owner account doesn't match the proposed_to argument (InvalidDestinationOwner)", async () => {
+        const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator.keyPair.publicKey, "openFundWallet");
+        const ata = await findATAForPDAForAuthority2(program.programId, pda);
+
+        const fund = await program.account.squadMintFund.fetch(pda);
+        const transactionDataPDA = await findPDAForMultisigTransaction(
+            program.programId, pda, "openFundWallet", fund.masterNonce
+        );
+
+        // Argument says pay proposedToWallet, but the owner account (and its
+        // ATA) passed in belong to memberOpenFundWallet2.
+        const mismatch = program.methods
+            .createProposal(MIN_PROPOSAL, proposedToWallet.keyPair.publicKey)
+            .accounts({
+                transaction: transactionDataPDA,
+                multisig: pda,
+                feePayer: squadMintFeePayer.publicKey,
+                proposer: walletOwnerAndCreator.keyPair.publicKey,
+                mint: testMint.mintPubkey,
+                proposedToOwner: memberOpenFundWallet2.keyPair.publicKey,
+                multisigAta: ata,
+                proposedToAta: memberOpenFundWallet2.ataAccount.address,
+                tokenProgram: TOKEN_PROGRAM_ID,
+                associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+                systemProgram: anchor.web3.SystemProgram.programId
+            })
+            .signers([squadMintFeePayer, walletOwnerAndCreator.keyPair])
+            .rpc();
+
+        await expect(mismatch).to.be.rejectedWith(/InvalidDestinationOwner/);
+    });
+
+    // ==================== N-1 regression: closed joiner ATA cannot block rejection ====================
+
+    it("Owner can reject a join request even after the joiner closed their USDC ATA (refund via init_if_needed)", async () => {
+        const owner = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
+        const pda = await initializeAccount(program, owner.keyPair, squadMintFeePayer, testMint.mintPubkey, "n1CloseAta");
+
+        const joiner = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
+        const joinAmount = new BN(amountToSmalletDecimal(1.11));
+        await initiateJoinRequest(program, pda, joiner, joinAmount, squadMintFeePayer, testMint.mintPubkey);
+        const joinCustodialPda = await findPDAForJoinCustodialAccount(program.programId, pda, joiner.keyPair.publicKey);
+
+        // Joiner empties and closes their own USDC ATA after escrowing.
+        const joinerAtaState = await getAccount(connection, joiner.ataAccount.address);
+        if (joinerAtaState.amount > BigInt(0)) {
+            await transfer(
+                connection, squadMintFeePayer,
+                joiner.ataAccount.address, testMint.tokenAccountPubkey,
+                joiner.keyPair, joinerAtaState.amount
+            );
+        }
+        await closeAccount(connection, squadMintFeePayer, joiner.ataAccount.address, joiner.keyPair.publicKey, joiner.keyPair);
+        await expect(getAccount(connection, joiner.ataAccount.address)).to.be.rejected;
+
+        // Rejection must still succeed: the program recreates the ATA
+        // (init_if_needed) and refunds the escrow.
+        await rejectMember(program, pda, joinCustodialPda, joiner, owner, owner, squadMintFeePayer, testMint.mintPubkey);
+
+        const refunded = await getAccount(connection, joiner.ataAccount.address);
+        expect(refunded.amount.toString()).to.equal(joinAmount.toString());
+
+        await expect(
+            program.account.joinRequestCustodialWallet.fetch(joinCustodialPda)
+        ).to.be.rejected;
     });
 });
