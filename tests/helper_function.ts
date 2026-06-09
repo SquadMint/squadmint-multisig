@@ -316,7 +316,6 @@ const USDC_MINT_KEYPAIR = anchor.web3.Keypair.fromSecretKey(
             proposingJoinerAta: requestToJoinMember.ataAccount.address,
             joinCustodialAccount: joinCustodialPda,
             joinCustodialAccountAta: joinCustodialAta,
-            multisigAta: multisigAta,
             tokenProgram: TOKEN_PROGRAM_ID,
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
             systemProgram:  anchor.web3.SystemProgram.programId
@@ -357,12 +356,10 @@ const USDC_MINT_KEYPAIR = anchor.web3.Keypair.fromSecretKey(
             multisigOwner: multisigOwner.keyPair.publicKey,
             mint: mint,
             proposingJoiner: requestToJoinMember.keyPair.publicKey,
-            proposingJoinerAta: requestToJoinMember.ataAccount.address,
             joinCustodialAccount: joinCustodialPda,
             joinCustodialAccountAta: joinCustodialAta,
             multisigAta: multisigAta,
             tokenProgram: TOKEN_PROGRAM_ID,
-            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId
         })
         .signers([feePayer, signer.keyPair])

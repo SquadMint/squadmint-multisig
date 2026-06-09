@@ -436,13 +436,10 @@ describe("SquadMint Multisig program tests", () => {
         const full = await program.account.squadMintFund.fetch(pda);
         expect(full.members).to.have.lengthOf(8);
 
-        // An 8th joiner can still escrow a join request, but accepting it would
-        // make 9 members -> rejected by the cap.
+        // N-2: an 8th joiner can no longer even escrow a join request into a
+        // full fund — the deposit is rejected up front instead of being stranded.
         const overflowJoiner = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
-        await initiateJoinRequest(program, pda, overflowJoiner, joinAmount, squadMintFeePayer, testMint.mintPubkey);
-        const overflowCustodialPda = await findPDAForJoinCustodialAccount(program.programId, pda, overflowJoiner.keyPair.publicKey);
-
-        const overflow = addMember(program, pda, overflowCustodialPda, overflowJoiner, owner, owner, squadMintFeePayer, testMint.mintPubkey);
+        const overflow = initiateJoinRequest(program, pda, overflowJoiner, joinAmount, squadMintFeePayer, testMint.mintPubkey);
         await expect(overflow).to.be.rejectedWith(/MaxMembersReached/);
 
         const stillFull = await program.account.squadMintFund.fetch(pda);

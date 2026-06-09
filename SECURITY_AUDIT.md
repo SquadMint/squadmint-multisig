@@ -140,3 +140,19 @@ The program gets several important things right, and the existing `hacker_tests.
 3. **M-1:** make the production mint impossible to omit at build time; assert it in CI.
 4. Encode the quorum rule deliberately (M-3) and add boundary tests for group sizes 1–8, plus a test for the "stop voting → fund frozen" scenario and the "owner adds members mid-vote" scenario — neither is currently covered.
 5. Engage one of the listed third-party auditors before mainnet value.
+
+---
+
+## Addendum — second review (2026-06-09)
+
+New findings from a follow-up pass, with resolution status:
+
+| # | Severity | Finding | Status |
+|---|----------|---------|--------|
+| N-1 | Medium | `add_member`/`reject_member` required the joiner's personal USDC ATA to exist; a closed ATA stranded the escrow (no accept *or* reject possible) | **Fixed** — `UpdateFund` split into `AddMember` (no joiner ATA) and `RejectMember` (joiner ATA `init_if_needed`) |
+| N-2 | Medium | `initiate_join_request` ignored the 8-member cap, escrowing deposits into funds that could never accept them | **Fixed** — cap enforced at request time (`MaxMembersReached`) |
+| N-3 | Low | Members added mid-vote can vote on the in-flight proposal | **Accepted risk** — owner-discretion by design; no snapshot |
+| N-4 | Info | Misleading error codes (`DuplicateMember`/`InvalidDestinationOwner` reused for unrelated checks) | **Fixed** — `ProposingJoinerMismatch`, `JoinRequestUserMismatch`, `JoinRequestFundMismatch`, `JoinAmountMismatch` |
+| N-5 | Info | Dead double-vote re-check in `submit_and_execute`; unused `multisig_ata` in `CreateJoinRequestProposal` | **Fixed** — dead check removed; `multisig_ata` dropped and replaced with an explicit `mint == USDC_MINT` constraint (the old account was silently load-bearing as the only mint pin in that instruction) |
+
+Policy decisions recorded: **M-2 is by design** — join escrows are released only by owner accept/reject; no joiner self-refund will be added. N-3 likewise accepted (membership is the owner's call even during a live vote).
