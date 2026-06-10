@@ -1,3 +1,8 @@
+// anchor-lang 0.31's generated code (inside #[program]) still calls the
+// deprecated AccountInfo::realloc. Not reachable from our code; remove this
+// allow when upgrading Anchor.
+#![allow(deprecated)]
+
 use anchor_lang::prelude::*;
 use anchor_lang::AccountsClose;
 
@@ -31,7 +36,7 @@ pub mod squad_mint_multi_sig {
 
     pub fn initialize(ctx: Context<Initialize>, account_handle: String, join_amount: u64) -> Result<()> {
         msg!("Greetings from: {:?}", ctx.program_id);
-        if account_handle.len() == 0 || account_handle.len() > SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE {
+        if account_handle.is_empty() || account_handle.len() > SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE {
             return Err(error!(ErrorCode::HandleLenNotValid));
         }
         require!(join_amount >= SquadMintFund::SQUAD_MINT_MIN_AMOUNT, ErrorCode::InsufficientJoiningAmount);
