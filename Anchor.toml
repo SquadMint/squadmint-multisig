@@ -16,20 +16,24 @@ squad_mint_multi_sig = "BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz"
 [registry]
 url = "https://api.apr.dev"
 
+# Tests MUST run on localnet: the suite creates the pinned test mint at a
+# fixed keypair, which can only ever succeed once per cluster (a fresh
+# test-validator ledger each run), and relies on unlimited airdrops.
+# `anchor test` on devnet also re-deploys the program on every run.
+# Deploy to devnet explicitly with `anchor run deploy-devnet` instead.
 [provider]
-cluster = "devnet"
+cluster = "localnet"
 wallet = "~/keypair-dev-1.json"
-
-#[provider]
-#cluster = "localnet"
-#wallet = "~/keypair-dev-1.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+# Build with the devnet mint pinned, then deploy with the devnet wallet.
+deploy-devnet = "anchor run build-devnet && anchor deploy --provider.cluster devnet --provider.wallet ~/keypair-dev-1.json"
 # Per-cluster builds: SQUADMINT_USDC_MINT is read at compile time by
 # `USDC_MINT` (programs/squad_mint_multi_sig/src/lib.rs) and enforced at
 # `initialize`. Plain `anchor build` / `anchor test` (no env) falls back to
 # the committed test mint. Run via `anchor run build-devnet` / `build-prod`.
-build-devnet = "SQUADMINT_USDC_MINT=GHCrkDPkTDigsEXMctzEsWc48nWPufcgaqqK4vexQX1f anchor build"
-# M-1: `--features mainnet` makes the mint mandatory at compile time (env! errors if unset).
-build-prod = "SQUADMINT_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v anchor build -- --features mainnet"
+build-devnet = "SQUADMINT_USDC_MINT=GHCrkDPkTDigsEXMctzEsWc48nWPufcgaqqK4vexQX1f anchor build --provider.cluster devnet --provider.wallet ~/keypair-dev-1.json"
+build-prod = "SQUADMINT_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v anchor build --provider.cluster mainnet --provider.wallet ~/keypair-mainnet.json -- --features mainnet"
+# Build + deploy mainnet in one step (update the wallet path to your real mainnet upgrade authority).
+deploy-prod = "anchor run build-prod && anchor deploy --provider.cluster mainnet --provider.wallet ~/keypair-mainnet.json"

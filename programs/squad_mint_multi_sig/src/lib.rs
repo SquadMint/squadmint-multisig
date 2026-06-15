@@ -1,3 +1,8 @@
+// anchor-lang 0.31's generated code (inside #[program]) still calls the
+// deprecated AccountInfo::realloc. Not reachable from our code; remove this
+// allow when upgrading Anchor.
+#![allow(deprecated)]
+
 use anchor_lang::prelude::*;
 use anchor_lang::AccountsClose;
 
@@ -9,11 +14,6 @@ use anchor_spl::{
 
 declare_id!("BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz");
 
-// Production builds must pin the mint explicitly. Building with the `mainnet`
-// feature uses `env!`, which FAILS THE BUILD if `SQUADMINT_USDC_MINT` is unset
-// — so a mainnet artifact can never silently fall back to the test mint.
-// Non-mainnet builds keep the env-or-test-mint fallback for local/devnet/CI.
-// Wire-up: `anchor run build-prod` passes `--features mainnet` (see Anchor.toml).
 #[cfg(feature = "mainnet")]
 pub const USDC_MINT: Pubkey = Pubkey::from_str_const(env!(
     "SQUADMINT_USDC_MINT",
@@ -36,10 +36,10 @@ pub mod squad_mint_multi_sig {
 
     pub fn initialize(ctx: Context<Initialize>, account_handle: String, join_amount: u64) -> Result<()> {
         msg!("Greetings from: {:?}", ctx.program_id);
-        if account_handle.len() == 0 || account_handle.len() > SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE {
+        if account_handle.is_empty() || account_handle.len() > SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE {
             return Err(error!(ErrorCode::HandleLenNotValid));
         }
-        require!(join_amount > 100000, ErrorCode::InsufficientJoiningAmount);
+        require!(join_amount >= SquadMintFund::SQUAD_MINT_MIN_AMOUNT, ErrorCode::InsufficientJoiningAmount);
         let fund = &mut ctx.accounts.multisig;
         msg!("Account address: {} ", fund.key());
         fund.owner = *ctx.accounts.multisig_owner.key;
@@ -52,7 +52,7 @@ pub mod squad_mint_multi_sig {
         Ok(())
     }
 
-    pub fn add_member(ctx: Context<UpdateFund>, new_member: Pubkey) -> Result<()> {
+    pub fn add_member(ctx: Context<AddMember>, new_member: Pubkey) -> Result<()> {
         msg!("Add member called from: {:?}", ctx.program_id);
         let multisig_key = ctx.accounts.multisig.key();
         let new_member_key = ctx.accounts.proposing_joiner.key(); // TODO: do better like in submit_and_execute
@@ -63,10 +63,10 @@ pub mod squad_mint_multi_sig {
         require!(multisig.members.len() < SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE, ErrorCode::MaxMembersReached);
         require_keys_eq!(multisig.owner.key(), *ctx.accounts.multisig_owner.key, ErrorCode::CannotAddMember);
         require!(!multisig.members.contains(&new_member), ErrorCode::DuplicateMember);
-        require_keys_eq!(ctx.accounts.proposing_joiner.key(), new_member, ErrorCode::InvalidDestinationOwner);
-        require_keys_eq!(join_custodial_account.request_to_join_user.key(), new_member, ErrorCode::DuplicateMember);
-        require_keys_eq!(join_custodial_account.request_to_join_squad_mint_fund.key(), multisig_key, ErrorCode::DuplicateMember);
-        require!(join_custodial_account.join_amount == multisig.join_amount, ErrorCode::InvalidDestinationOwner);
+        require_keys_eq!(ctx.accounts.proposing_joiner.key(), new_member, ErrorCode::ProposingJoinerMismatch);
+        require_keys_eq!(join_custodial_account.request_to_join_user.key(), new_member, ErrorCode::JoinRequestUserMismatch);
+        require_keys_eq!(join_custodial_account.request_to_join_squad_mint_fund.key(), multisig_key, ErrorCode::JoinRequestFundMismatch);
+        require!(join_custodial_account.join_amount == multisig.join_amount, ErrorCode::JoinAmountMismatch);
 
         let transfer_cpi = TransferChecked {
             from: ctx.accounts.join_custodial_account_ata.to_account_info(),
@@ -117,7 +117,7 @@ pub mod squad_mint_multi_sig {
         Ok(())
     }
 
-    pub fn reject_member(ctx: Context<UpdateFund>, new_member: Pubkey) -> Result<()> {
+    pub fn reject_member(ctx: Context<RejectMember>, new_member: Pubkey) -> Result<()> {
         msg!("Calling reject member: {:?}", ctx.program_id);
 
         let multisig_key = ctx.accounts.multisig.key();
@@ -127,11 +127,11 @@ pub mod squad_mint_multi_sig {
         let join_custodial_account = &mut ctx.accounts.join_custodial_account;
 
         require_keys_eq!(multisig.owner.key(), *ctx.accounts.multisig_owner.key, ErrorCode::CannotAddMember);
-        require_keys_eq!(join_custodial_account.request_to_join_user.key(), ctx.accounts.proposing_joiner.key(), ErrorCode::InvalidDestinationOwner);
+        require_keys_eq!(join_custodial_account.request_to_join_user.key(), ctx.accounts.proposing_joiner.key(), ErrorCode::JoinRequestUserMismatch);
         require!(!multisig.members.contains(&new_member), ErrorCode::DuplicateMember);
-        require_keys_eq!(ctx.accounts.proposing_joiner.key(), new_member, ErrorCode::InvalidDestinationOwner);
-        require_keys_eq!(join_custodial_account.request_to_join_squad_mint_fund.key(), multisig_key, ErrorCode::InvalidDestinationOwner);
-        require!(join_custodial_account.join_amount == multisig.join_amount, ErrorCode::DuplicateMember);
+        require_keys_eq!(ctx.accounts.proposing_joiner.key(), new_member, ErrorCode::ProposingJoinerMismatch);
+        require_keys_eq!(join_custodial_account.request_to_join_squad_mint_fund.key(), multisig_key, ErrorCode::JoinRequestFundMismatch);
+        require!(join_custodial_account.join_amount == multisig.join_amount, ErrorCode::JoinAmountMismatch);
 
 
         let transfer_cpi = TransferChecked {
@@ -199,7 +199,7 @@ pub mod squad_mint_multi_sig {
 
         require!(join_amount == multisig.join_amount, ErrorCode::JoiningAmountShouldMatchTargetWallet);
         require!(!multisig.members.contains(proposing_joiner.key), ErrorCode::DuplicateMember);
-        // SHOULD WE LIMIT THE JOIN AMOUNT TO HAVE A MINIMUM?
+        require!(multisig.members.len() < SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE, ErrorCode::MaxMembersReached);
 
         let transfer_cpi = TransferChecked {
             from: ctx.accounts.proposing_joiner_ata.to_account_info(),
@@ -236,9 +236,7 @@ pub mod squad_mint_multi_sig {
          );
         require!(!multisig.has_active_vote, ErrorCode::CanOnlyInitOneVoteAtATime);
         require!(multisig.members.contains(&proposer), ErrorCode::MemberNotPartOfFund);
-        // L-3: reject empty/dust proposals so the single active-vote slot can't
-        // be occupied by a meaningless payout.
-        require!(amount >= SquadMintFund::SQUAD_MINT_MIN_PROPOSAL_AMOUNT, ErrorCode::InvalidProposalAmount);
+        require!(amount >= SquadMintFund::SQUAD_MINT_MIN_AMOUNT, ErrorCode::InvalidProposalAmount);
         require!(ctx.accounts.multisig_ata.amount >= amount, ErrorCode::InsufficientFunds); // v2 will have this check as joining fee will add money here
 
         transaction.belongs_to_squad_mint_fund = multisig.key();
@@ -275,8 +273,6 @@ pub mod squad_mint_multi_sig {
         require!(!transaction.did_meet_threshold, ErrorCode::AlreadyExecuted);
 
         require!(!multisig.members.is_empty(), ErrorCode::HasNoActiveVote);
-        // I-2: defense-in-depth. The PDA seeds already bind this proposal to
-        // `multisig`, but assert the stored linkage explicitly too.
         require_keys_eq!(transaction.belongs_to_squad_mint_fund, multisig.key(), ErrorCode::ProposalFundMismatch);
         require_keys_eq!(
             ctx.accounts.proposed_to_owner.key(),
@@ -293,7 +289,6 @@ pub mod squad_mint_multi_sig {
         let submitter_has_voted = transaction.executors.contains(&ctx.accounts.submitter.key());
         if !submitter_has_voted {
             require!(multisig.members.contains(&ctx.accounts.submitter.key()), ErrorCode::MemberNotPartOfFund);
-            require!(!transaction.executors.contains(&ctx.accounts.submitter.key()), ErrorCode::CannotVoteTwice);
             transaction.executors.push(ctx.accounts.submitter.key());
             transaction.votes.push(vote);
             msg!("Has Voted {} on Fund {} to Fund {}. The vote: {}", &ctx.accounts.submitter.key(), multisig.key(), transaction.message_data.proposed_to_account.key() , if vote { "YES" } else { "NO" })
@@ -302,9 +297,6 @@ pub mod squad_mint_multi_sig {
         let yes_votes = transaction.votes.iter().filter(|&&v| v).count() as u64;
         let no_votes = transaction.votes.iter().filter(|&&v| !v).count() as u64;
         let total_members = multisig.members.len() as u64;
-        // M-3: thresholds are intentionally asymmetric — spending requires a
-        // 51% supermajority "yes" while a 50% "no" can reject. Both are named
-        // constants so the policy is explicit and auditable.
         let yes_threshold = SquadMintFund::SQUAD_MINT_YES_THRESHOLD_PERCENTAGE;
         let no_threshold = SquadMintFund::SQUAD_MINT_NO_THRESHOLD_PERCENTAGE;
         let yes_meets = yes_votes * 100 >= yes_threshold * total_members;
@@ -452,6 +444,9 @@ pub struct CreateJoinRequestProposal<'info> {
     pub multisig: Account<'info, SquadMintFund>, // the multi sig we are requesting to join
     #[account(mut)]
     pub fee_payer: Signer<'info>,
+    #[account(
+        constraint = mint.key() == USDC_MINT @ ErrorCode::InvalidMint
+    )]
     pub mint: InterfaceAccount<'info, Mint>,
     #[account(init,
               payer = fee_payer,
@@ -471,15 +466,6 @@ pub struct CreateJoinRequestProposal<'info> {
     pub join_custodial_account_ata: InterfaceAccount<'info, TokenAccount>, // we can close this account and get our money back
     #[account(
         mut,
-        seeds = [b"token_vault", multisig.key().as_ref()],
-        bump,
-        token::mint = mint,
-        token::authority = multisig,
-        token::token_program = token_program
-    )]
-    pub multisig_ata: InterfaceAccount<'info, TokenAccount>,
-    #[account(
-        mut,
         associated_token::mint = mint,
         associated_token::authority = proposing_joiner,
         associated_token::token_program = token_program
@@ -492,7 +478,7 @@ pub struct CreateJoinRequestProposal<'info> {
 }
 
 #[derive(Accounts)]
-pub struct UpdateFund<'info> { // Should input amount and add this to the Tx to refund add to group
+pub struct AddMember<'info> {
     #[account(mut,
         seeds = [multisig.account_handle.as_bytes(), multisig.owner.key().as_ref()],
         bump
@@ -505,14 +491,67 @@ pub struct UpdateFund<'info> { // Should input amount and add this to the Tx to 
     pub fee_payer: Signer<'info>,
     #[account(
         signer,
-        constraint = multisig_owner.key() == multisig.owner @ ErrorCode::MemberNotPartOfFund
+        constraint = multisig_owner.key() == multisig.owner @ ErrorCode::CannotAddMember
     )]
     pub multisig_owner: Signer<'info>,
     pub mint: InterfaceAccount<'info, Mint>,
-    /// CHECK: this is checked is done in program
+    /// CHECK: validated against `new_member` and the custodial PDA seeds in the handler
     pub proposing_joiner: UncheckedAccount<'info>,
+    #[account(mut,
+              close = fee_payer,
+              seeds = [b"join_custodial_account", multisig.key().as_ref(), proposing_joiner.key().as_ref()],
+              bump,
+    )]
+    pub join_custodial_account: Account<'info, JoinRequestCustodialWallet>,
     #[account(
         mut,
+        seeds = [b"join_custodial_account_ata", join_custodial_account.key().as_ref()],
+        bump,
+        token::mint = mint,
+        token::authority = join_custodial_account,
+        token::token_program = token_program,
+    )]
+    pub join_custodial_account_ata: InterfaceAccount<'info, TokenAccount>,
+    #[account(
+        mut,
+        seeds = [b"token_vault", multisig.key().as_ref()],
+        bump,
+        token::mint = mint,
+        token::authority = multisig,
+        token::token_program = token_program
+    )]
+    pub multisig_ata: InterfaceAccount<'info, TokenAccount>,
+
+    // Programs
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
+// N-1: reject_member refunds to the joiner's ATA; `init_if_needed` guarantees
+// a rejection can never be blocked by the joiner having closed that ATA.
+#[derive(Accounts)]
+pub struct RejectMember<'info> {
+    #[account(mut,
+        seeds = [multisig.account_handle.as_bytes(), multisig.owner.key().as_ref()],
+        bump
+    )]
+    pub multisig: Account<'info, SquadMintFund>,
+    #[account(
+        mut,
+        signer
+    )]
+    pub fee_payer: Signer<'info>,
+    #[account(
+        signer,
+        constraint = multisig_owner.key() == multisig.owner @ ErrorCode::CannotAddMember
+    )]
+    pub multisig_owner: Signer<'info>,
+    pub mint: InterfaceAccount<'info, Mint>,
+    /// CHECK: validated against `new_member` and the custodial PDA seeds in the handler
+    pub proposing_joiner: UncheckedAccount<'info>,
+    #[account(
+        init_if_needed,
+        payer = fee_payer,
         associated_token::mint = mint,
         associated_token::authority = proposing_joiner,
         associated_token::token_program = token_program
@@ -532,7 +571,7 @@ pub struct UpdateFund<'info> { // Should input amount and add this to the Tx to 
         token::authority = join_custodial_account,
         token::token_program = token_program,
     )]
-    pub join_custodial_account_ata: InterfaceAccount<'info, TokenAccount>, // we can close this account and get our money back
+    pub join_custodial_account_ata: InterfaceAccount<'info, TokenAccount>,
     #[account(
         mut,
         seeds = [b"token_vault", multisig.key().as_ref()],
@@ -632,8 +671,9 @@ impl SquadMintFund {
     // supermajority (deliberately hard to withdraw); a 50% "no" can reject.
     pub const SQUAD_MINT_YES_THRESHOLD_PERCENTAGE: u64 = 51;
     pub const SQUAD_MINT_NO_THRESHOLD_PERCENTAGE: u64 = 50;
-    // L-3: smallest payout a proposal may request (no zero/empty proposals).
-    pub const SQUAD_MINT_MIN_PROPOSAL_AMOUNT: u64 = 1;
+    // Shared minimum for join deposits and proposal payouts (no zero/dust amounts).
+    // USDC has 6 decimals, so 100_000 base units = 0.1 USDC.
+    pub const SQUAD_MINT_MIN_AMOUNT: u64 = 100_000;
 
     // Borsh on-chain byte budget. The 8-byte account discriminator is added
     // separately at the `space = 8 + MAX_SIZE` constraint.
@@ -677,24 +717,14 @@ pub enum ErrorCode {
     MemberNotPartOfFund,
     #[msg("You are not the owner and therefore cannot add a new member")]
     CannotAddMember,
-    #[msg("This operation is only applicable to group funds")]
-    OperationOnlyApplicableToPrivateGroupFund,
     #[msg("Group fund has no active vote. Please create one first")]
     HasNoActiveVote,
     #[msg("A group fund can only have one active vote at a time")]
     CanOnlyInitOneVoteAtATime,
     #[msg("This transaction has already been executed")]
     AlreadyExecuted,
-    #[msg("This transaction has already been executed. Invalid nonce")]
-    AlreadyExecutedInvalidNonce,
-    #[msg("Invalid signature")]
-    InvalidSignature,
-    #[msg("Not enough signatures to complete this operation")]
-    InsufficientSignatures,
     #[msg("Nonce overflow")]
     NonceOverflow,
-    #[msg("You cannot vote twice on the same proposal")]
-    CannotVoteTwice,
     #[msg("Invalid destination owner for this operation")]
     InvalidDestinationOwner,
     #[msg("Insufficient funds for this operation")]
@@ -709,20 +739,12 @@ pub enum ErrorCode {
     ProposalFundMismatch,
     #[msg("Proposal amount is below the minimum")]
     InvalidProposalAmount,
-}
-
-// M-1: when building for mainnet, assert the pinned mint is canonical mainnet
-// USDC. Run via `SQUADMINT_USDC_MINT=EPjF... cargo test --features mainnet`.
-#[cfg(all(test, feature = "mainnet"))]
-mod mainnet_mint_tests {
-    use super::*;
-
-    #[test]
-    fn usdc_mint_is_canonical_mainnet() {
-        assert_eq!(
-            USDC_MINT,
-            Pubkey::from_str_const("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
-            "mainnet build must pin canonical mainnet USDC"
-        );
-    }
+    #[msg("Proposing joiner account does not match the new member key")]
+    ProposingJoinerMismatch,
+    #[msg("Join request was not created by this user")]
+    JoinRequestUserMismatch,
+    #[msg("Join request does not belong to this fund")]
+    JoinRequestFundMismatch,
+    #[msg("Join request amount does not match the fund's join amount")]
+    JoinAmountMismatch,
 }

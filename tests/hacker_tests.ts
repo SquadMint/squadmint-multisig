@@ -24,6 +24,8 @@ import {
     ASSOCIATED_TOKEN_PROGRAM_ID,
     createMint,
     getAccount,
+    getOrCreateAssociatedTokenAccount,
+    mintTo,
     TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 
@@ -34,6 +36,7 @@ import {
     decimals,
     findATAForPDAForAuthority,
     findATAForPDAForAuthority2,
+    findATAForPDAForJoinCustodialAccount,
     findPDAForAuthority,
     findPDAForJoinCustodialAccount,
     findPDAForMultisigTransaction,
@@ -144,7 +147,7 @@ describe("SquadMint — hacker / red-team tests", () => {
         const txPda = await findPDAForMultisigTransaction(program.programId, pda, fund.accountHandle, fund.masterNonce);
 
         const attempt = program.methods
-            .createProposal(new BN(1), attacker.keyPair.publicKey)
+            .createProposal(new BN(amountToSmalletDecimal(1)), attacker.keyPair.publicKey)
             .accounts({
                 transaction: txPda,
                 multisig: pda,
@@ -172,7 +175,7 @@ describe("SquadMint — hacker / red-team tests", () => {
         await fundVault(pda, 5);
 
         const proposedTo = await createWallet(connection, mint, feePayer, 2);
-        const txPda = await createProposalRaw(pda, owner, proposedTo, new BN(1)); // 1 yes / 2 -> active
+        const txPda = await createProposalRaw(pda, owner, proposedTo, new BN(amountToSmalletDecimal(1))); // 1 yes / 2 -> active
 
         const attacker = await createWallet(connection, mint, feePayer, 2);
         const vaultAta = await findATAForPDAForAuthority2(program.programId, pda);
@@ -392,6 +395,38 @@ describe("SquadMint — hacker / red-team tests", () => {
                 systemProgram,
             })
             .signers([owner, feePayer])
+            .rpc();
+
+        await expect(attempt).to.be.rejectedWith(/InvalidMint/);
+    });
+
+    it("cannot escrow a join request with a non-USDC mint (N-5 mint pin)", async () => {
+        const { pda } = await makeFund("hk_fakeJoin", 0);
+
+        // Attacker holds a worthless token and tries to use it as the join deposit.
+        const fakeMint = await createMint(connection, feePayer, feePayer.publicKey, feePayer.publicKey, decimals);
+        const attacker = await createWallet(connection, mint, feePayer, 2);
+        const fakeAta = await getOrCreateAssociatedTokenAccount(connection, feePayer, fakeMint, attacker.keyPair.publicKey);
+        await mintTo(connection, feePayer, fakeMint, fakeAta.address, feePayer, amountToSmalletDecimal(2));
+
+        const custodialPda = await findPDAForJoinCustodialAccount(program.programId, pda, attacker.keyPair.publicKey);
+        const custodialAta = findATAForPDAForJoinCustodialAccount(program.programId, custodialPda);
+
+        const attempt = program.methods
+            .initiateJoinRequest(JOIN_AMOUNT())
+            .accounts({
+                multisig: pda,
+                feePayer: feePayer.publicKey,
+                mint: fakeMint,
+                proposingJoiner: attacker.keyPair.publicKey,
+                proposingJoinerAta: fakeAta.address,
+                joinCustodialAccount: custodialPda,
+                joinCustodialAccountAta: custodialAta,
+                tokenProgram,
+                associatedTokenProgram,
+                systemProgram,
+            })
+            .signers([feePayer, attacker.keyPair])
             .rpc();
 
         await expect(attempt).to.be.rejectedWith(/InvalidMint/);
