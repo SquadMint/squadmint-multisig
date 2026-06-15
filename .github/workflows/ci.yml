@@ -77,3 +77,79 @@ jobs:
 
       - name: Run tests
         run: anchor test --provider.cluster localnet --provider.wallet ~/.config/solana/id.json
+
+  # M-1: prove the mainnet build refuses to compile without an explicit mint,
+  # and that the canonical mainnet USDC is what gets pinned when it's supplied.
+  verify-mainnet-mint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Mainnet build MUST fail when SQUADMINT_USDC_MINT is unset
+        run: |
+          if cargo build -p squad_mint_multi_sig --features mainnet 2>/dev/null; then
+            echo "::error::mainnet build succeeded without SQUADMINT_USDC_MINT — env! guard is broken"
+            exit 1
+          fi
+          echo "OK: mainnet build correctly refuses to compile without the mint env var"
+
+      - name: Canonical mainnet USDC is pinned when supplied
+        env:
+          SQUADMINT_USDC_MINT: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+        run: cargo test -p squad_mint_multi_sig --features mainnet
+
+  # Security gate (the "Danger"-style PR enforcement):
+  # rustfmt + clippy are hard blockers; the security scanner is advisory until
+  # its findings are triaged (flip continue-on-error to false to make it block).
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (with clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-clippy-
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy (warnings are errors)
+        run: cargo clippy --all-targets -- -D warnings
+
+  # Solana-specific static analysis — missing owner/signer checks, arithmetic
+  # overflow, PDA seed issues, account substitution, etc.
+  # Radar: https://github.com/Auditware/radar
+  static-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Advisory for now: confirm the action ref/inputs against Radar's current
+    # README, triage findings, then set this to false to make it a hard gate.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Radar static analysis
+        uses: Auditware/radar-action@main
+        with:
+          path: programs
+      # Manual alternative (if you prefer not to pin a third-party action):
+      #   curl -L https://raw.githubusercontent.com/auditware/radar/main/install-radar.sh | bash
+      #   radar -p programs

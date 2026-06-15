@@ -10,6 +10,9 @@ name = "squad_mint_multi_sig"
 
 [features]
 default = []
+# M-1: build with `--features mainnet` to require SQUADMINT_USDC_MINT at
+# compile time (env! fails the build if unset). Used by `anchor run build-prod`.
+mainnet = []
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []

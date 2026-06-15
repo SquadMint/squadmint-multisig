@@ -1,82 +1,107 @@
 # Squad Mint MultiSig
 
-The multi sig app that controls SquadMints apps voting process
+A Solana / Anchor program implementing the multisig voting process that controls
+SquadMint's funds. Members pool USDC into a program-owned vault and move funds only
+by passing an on-chain vote.
 
-# Devs
-- Anchor:  `anchor-0.32.1` 
-- Cargo:   `cargo 1.90.0 (840b83a10 2025-07-30)`
-- Rust:    `rustc 1.90.0 (1159e78c4 2025-09-14)`
-## Commands
+- **Program ID:** `BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz`
+- **Asset:** USDC (mint is pinned at compile time — see [Builds](#builds))
 
-set authority
+## How it works
+
+- **`initialize`** — creates a fund (`SquadMintFund` PDA) and its USDC vault; the creator becomes the owner and first member.
+- **`initiate_join_request`** — a prospective member escrows the `join_amount` into a per-request custodial account.
+- **`add_member` / `reject_member`** — the owner accepts (deposit moves into the vault) or rejects (deposit refunded) a join request.
+- **`create_proposal`** — a member proposes a USDC payout to a destination; auto-counts as one "yes".
+- **`submit_and_execute`** — members vote; once the threshold is met the payout executes (or the proposal is rejected) and the proposal account is closed.
+
+### Voting thresholds (intentionally asymmetric)
+
+Spending requires a **51% "yes" supermajority** (`SQUAD_MINT_YES_THRESHOLD_PERCENTAGE`),
+while a **50% "no"** can reject (`SQUAD_MINT_NO_THRESHOLD_PERCENTAGE`). This is deliberate:
+withdrawing funds should be harder than blocking a withdrawal. Consequence: in a 2-member
+fund a 1–1 split rejects the proposal. Both values are named constants in
+`programs/squad_mint_multi_sig/src/lib.rs`.
+
+## Toolchain
+
+| Tool   | Version            |
+|--------|--------------------|
+| Anchor | `0.31.1`           |
+| Solana CLI | `2.x` (≥ 2.0)  |
+| Rust   | stable (≥ 1.75)    |
+
+> The toolchain is the source of truth in `Anchor.toml` (`anchor_version = "0.31.1"`)
+> and `programs/squad_mint_multi_sig/Cargo.toml` (`anchor-lang = "0.31.1"`). Keep this
+> table in sync with those files.
+
+## Builds
+
+The USDC mint is read at **compile time** from `SQUADMINT_USDC_MINT` and enforced at
+`initialize`. Use the cluster-specific scripts so the correct mint is pinned:
+
 ```sh
- solana config set --keypair ~/keypair-dev-1.json
+anchor run build-devnet   # pins the devnet test mint
+anchor run build-prod     # pins mainnet USDC + requires the mint (--features mainnet)
 ```
 
-Deploy
-devnet
-```sh
- anchor deploy
- 
-```
-localnet 
-```sh
-anchor deploy --provider.cluster localnet
-```
+A plain `anchor build` (no env var) falls back to a **committed test mint** and is for
+local/CI only — never deploy a plain build to mainnet. The `mainnet` cargo feature makes
+the mint mandatory: `anchor run build-prod` fails to compile if `SQUADMINT_USDC_MINT` is unset.
 
-Run Local Validator
+## Local development
 
 ```sh
+# Run a local validator (separate terminal)
 solana-test-validator
+
+# Build + run the test suite against an already-running validator
+anchor test --skip-local-validator
+
+# Or let Anchor spin up its own validator
+anchor test
 ```
 
-## Test using solana-test-validator 
+## Deployment
+
+See **[DEPLOYMENT.md](./DEPLOYMENT.md)** for the full mainnet runbook (verifiable builds,
+Squads multisig upgrade authority, priority fees, buffer recovery, and the pre-flight
+checklist). Quick devnet deploy:
 
 ```sh
-anchor test  --skip-local-validator
+solana config set --url devnet
+anchor build
+anchor deploy
 ```
 
-## Get Program Rent
+> Note: `solana config set --keypair <path>` only sets your CLI's **default signer** — it
+> does **not** set the program's upgrade authority. Use `solana program set-upgrade-authority`
+> for that (covered in DEPLOYMENT.md).
+
+### Program rent
 
 ```sh
 solana rent $(stat -f%z target/deploy/squad_mint_multi_sig.so)
 ```
-// Rent-exempt minimum: 3.11727488 SOL
-### Credits
 
-Design inspired by https://github.com/coral-xyz/multisig
+Rent scales with the `.so` size; recompute after code changes rather than trusting a fixed number.
 
-### Audits
+## Security
 
-https://softment.com/code-audit
-https://hacken6551.activehosted.com/f/25?utm_source=hackenclub&utm_medium=post&utm_campaign=sc-checklist
-https://www.zellic.io/
+- A standalone review lives in [SECURITY_AUDIT.md](./SECURITY_AUDIT.md).
+- Static analysis and fuzzing run in CI — see [.github/workflows/ci.yml](./.github/workflows/ci.yml)
+  (clippy + rustfmt + [Radar](https://github.com/Auditware/radar)) and
+  [trident-tests/README.md](./trident-tests/README.md) for the [Trident](https://github.com/Ackee-Blockchain/trident) fuzz setup.
+- **Linters vs. verification:** `cargo clippy` is the Rust linter; Radar / Sec3 X-Ray are
+  Solana-specific security scanners; [Kani](https://model-checking.github.io/kani/) is a
+  *model checker* (formal verification of invariants), not a linter. They are complementary.
+- The `init_if_needed` destination ATA is constrained: `proposed_to_owner` is checked against
+  the stored `proposed_to_account` and the ATA against `get_associated_token_address`, so the
+  destination cannot be substituted.
+- **Not yet audited.** A formal third-party audit (e.g. Zellic, Hacken) is recommended before
+  holding real value on mainnet.
 
-Checkout Kani:: https://model-checking.github.io/kani/getting-started.html
+## Credits
 
-
-```sh 
-Minor: Asymmetric Threshold
-The "no" threshold is >= 50% while "yes" is >= 51%. With 2 members, a 1-1 split means the proposal is rejected (50% no triggers close, but 50% yes does not reach 51%). This might be intentional, but worth verifying.
-```
-
-### add Sonarscan and add a rust linter could this be Kani
-
-## we need to add test to see if they can withdraw more than whats in the group
-
-###
-
-init_if_needed on proposed_to_ata
-rust#[account(
-init_if_needed,
-payer = fee_payer,
-associated_token::mint = mint,
-associated_token::authority = proposed_to_owner,
-)]
-pub proposed_to_ata: InterfaceAccount<'info, TokenAccount>,
-This appears in both CreateProposal and SubmitAndExecute. The risk here is that proposed_to_owner is an UncheckedAccount validated only against transaction.message_data.proposed_to_account. A carefully crafted account substitution during SubmitAndExecute could potentially redirect the ATA initialization — though this is harder to exploit with Anchor's constraints.
-
-
-### Example program, look at how they tests and deployment and read me as well
-
-https://github.com/solana-program/subscriptions
+Design inspired by [coral-xyz/multisig](https://github.com/coral-xyz/multisig).
+Reference for test/deploy/layout patterns: [solana-program/subscriptions](https://github.com/solana-program/subscriptions).
