@@ -7,9 +7,9 @@ use anchor_lang::prelude::*;
 use anchor_lang::AccountsClose;
 
 use anchor_spl::{
-    token::{TransferChecked, transfer_checked, CloseAccount, close_account},
-    associated_token::{AssociatedToken, get_associated_token_address},
-    token_interface::{Mint, TokenAccount, TokenInterface}
+    associated_token::{get_associated_token_address, AssociatedToken},
+    token::{close_account, transfer_checked, CloseAccount, TransferChecked},
+    token_interface::{Mint, TokenAccount, TokenInterface},
 };
 
 declare_id!("BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz");
@@ -21,12 +21,10 @@ pub const USDC_MINT: Pubkey = Pubkey::from_str_const(env!(
 ));
 
 #[cfg(not(feature = "mainnet"))]
-pub const USDC_MINT: Pubkey = Pubkey::from_str_const(
-    match option_env!("SQUADMINT_USDC_MINT") {
-        Some(value) => value,
-        None => "37KQMrbBtkNFYJvDKW3tGxEs1WuvqcEeu44JGrjPkYsz",
-    },
-);
+pub const USDC_MINT: Pubkey = Pubkey::from_str_const(match option_env!("SQUADMINT_USDC_MINT") {
+    Some(value) => value,
+    None => "37KQMrbBtkNFYJvDKW3tGxEs1WuvqcEeu44JGrjPkYsz",
+});
 
 // TODO: check is we need emit certain events as well to capture off app actions (FUTURE)
 // Add checkes for the mints are as expected
@@ -34,12 +32,21 @@ pub const USDC_MINT: Pubkey = Pubkey::from_str_const(
 pub mod squad_mint_multi_sig {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>, account_handle: String, join_amount: u64) -> Result<()> {
+    pub fn initialize(
+        ctx: Context<Initialize>,
+        account_handle: String,
+        join_amount: u64,
+    ) -> Result<()> {
         msg!("Greetings from: {:?}", ctx.program_id);
-        if account_handle.is_empty() || account_handle.len() > SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE {
+        if account_handle.is_empty()
+            || account_handle.len() > SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE
+        {
             return Err(error!(ErrorCode::HandleLenNotValid));
         }
-        require!(join_amount >= SquadMintFund::SQUAD_MINT_MIN_AMOUNT, ErrorCode::InsufficientJoiningAmount);
+        require!(
+            join_amount >= SquadMintFund::SQUAD_MINT_MIN_AMOUNT,
+            ErrorCode::InsufficientJoiningAmount
+        );
         let fund = &mut ctx.accounts.multisig;
         msg!("Account address: {} ", fund.key());
         fund.owner = *ctx.accounts.multisig_owner.key;
@@ -60,13 +67,38 @@ pub mod squad_mint_multi_sig {
         let multisig = &mut ctx.accounts.multisig;
         let join_custodial_account = &mut ctx.accounts.join_custodial_account;
 
-        require!(multisig.members.len() < SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE, ErrorCode::MaxMembersReached);
-        require_keys_eq!(multisig.owner.key(), *ctx.accounts.multisig_owner.key, ErrorCode::CannotAddMember);
-        require!(!multisig.members.contains(&new_member), ErrorCode::DuplicateMember);
-        require_keys_eq!(ctx.accounts.proposing_joiner.key(), new_member, ErrorCode::ProposingJoinerMismatch);
-        require_keys_eq!(join_custodial_account.request_to_join_user.key(), new_member, ErrorCode::JoinRequestUserMismatch);
-        require_keys_eq!(join_custodial_account.request_to_join_squad_mint_fund.key(), multisig_key, ErrorCode::JoinRequestFundMismatch);
-        require!(join_custodial_account.join_amount == multisig.join_amount, ErrorCode::JoinAmountMismatch);
+        require!(
+            multisig.members.len() < SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE,
+            ErrorCode::MaxMembersReached
+        );
+        require_keys_eq!(
+            multisig.owner.key(),
+            *ctx.accounts.multisig_owner.key,
+            ErrorCode::CannotAddMember
+        );
+        require!(
+            !multisig.members.contains(&new_member),
+            ErrorCode::DuplicateMember
+        );
+        require_keys_eq!(
+            ctx.accounts.proposing_joiner.key(),
+            new_member,
+            ErrorCode::ProposingJoinerMismatch
+        );
+        require_keys_eq!(
+            join_custodial_account.request_to_join_user.key(),
+            new_member,
+            ErrorCode::JoinRequestUserMismatch
+        );
+        require_keys_eq!(
+            join_custodial_account.request_to_join_squad_mint_fund.key(),
+            multisig_key,
+            ErrorCode::JoinRequestFundMismatch
+        );
+        require!(
+            join_custodial_account.join_amount == multisig.join_amount,
+            ErrorCode::JoinAmountMismatch
+        );
 
         let transfer_cpi = TransferChecked {
             from: ctx.accounts.join_custodial_account_ata.to_account_info(),
@@ -89,7 +121,7 @@ pub mod squad_mint_multi_sig {
         transfer_checked(
             cpi_ctx,
             join_custodial_account.join_amount,
-            ctx.accounts.mint.decimals
+            ctx.accounts.mint.decimals,
         )?;
 
         multisig.members.push(new_member);
@@ -102,7 +134,7 @@ pub mod squad_mint_multi_sig {
         close_account(CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             close_ata_cpi,
-            signer_seeds
+            signer_seeds,
         ))?;
 
         msg!("Added new member: {} | fund {}. Total members: {} | Deposited {} to ATA {} | Closing {} and Closing ATA: {}",
@@ -126,13 +158,34 @@ pub mod squad_mint_multi_sig {
         let multisig = &mut ctx.accounts.multisig;
         let join_custodial_account = &mut ctx.accounts.join_custodial_account;
 
-        require_keys_eq!(multisig.owner.key(), *ctx.accounts.multisig_owner.key, ErrorCode::CannotAddMember);
-        require_keys_eq!(join_custodial_account.request_to_join_user.key(), ctx.accounts.proposing_joiner.key(), ErrorCode::JoinRequestUserMismatch);
-        require!(!multisig.members.contains(&new_member), ErrorCode::DuplicateMember);
-        require_keys_eq!(ctx.accounts.proposing_joiner.key(), new_member, ErrorCode::ProposingJoinerMismatch);
-        require_keys_eq!(join_custodial_account.request_to_join_squad_mint_fund.key(), multisig_key, ErrorCode::JoinRequestFundMismatch);
-        require!(join_custodial_account.join_amount == multisig.join_amount, ErrorCode::JoinAmountMismatch);
-
+        require_keys_eq!(
+            multisig.owner.key(),
+            *ctx.accounts.multisig_owner.key,
+            ErrorCode::CannotAddMember
+        );
+        require_keys_eq!(
+            join_custodial_account.request_to_join_user.key(),
+            ctx.accounts.proposing_joiner.key(),
+            ErrorCode::JoinRequestUserMismatch
+        );
+        require!(
+            !multisig.members.contains(&new_member),
+            ErrorCode::DuplicateMember
+        );
+        require_keys_eq!(
+            ctx.accounts.proposing_joiner.key(),
+            new_member,
+            ErrorCode::ProposingJoinerMismatch
+        );
+        require_keys_eq!(
+            join_custodial_account.request_to_join_squad_mint_fund.key(),
+            multisig_key,
+            ErrorCode::JoinRequestFundMismatch
+        );
+        require!(
+            join_custodial_account.join_amount == multisig.join_amount,
+            ErrorCode::JoinAmountMismatch
+        );
 
         let transfer_cpi = TransferChecked {
             from: ctx.accounts.join_custodial_account_ata.to_account_info(),
@@ -151,15 +204,11 @@ pub mod squad_mint_multi_sig {
         let signer_seeds = &[&join_custodial_account_seeds[..]];
 
         let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_ctx = CpiContext::new_with_signer(
-            cpi_program,
-            transfer_cpi,
-            signer_seeds
-        );
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, transfer_cpi, signer_seeds);
         transfer_checked(
             cpi_ctx,
             join_custodial_account.join_amount,
-            ctx.accounts.mint.decimals
+            ctx.accounts.mint.decimals,
         )?;
 
         let close_ata_cpi = CloseAccount {
@@ -170,7 +219,7 @@ pub mod squad_mint_multi_sig {
         close_account(CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             close_ata_cpi,
-            signer_seeds
+            signer_seeds,
         ))?;
 
         msg!("Rejected new member: {} | fund {}. Total members: {} | Refunded {} to ATA {} | Closing {} and Closing ATA: {}",
@@ -185,21 +234,38 @@ pub mod squad_mint_multi_sig {
         Ok(())
     }
 
-    pub fn initiate_join_request(ctx: Context<CreateJoinRequestProposal>, join_amount: u64) -> Result<()> {
-        msg!("Create join request proposal, called from: {:?} amount {:?}", ctx.program_id, join_amount);
+    pub fn initiate_join_request(
+        ctx: Context<CreateJoinRequestProposal>,
+        join_amount: u64,
+    ) -> Result<()> {
+        msg!(
+            "Create join request proposal, called from: {:?} amount {:?}",
+            ctx.program_id,
+            join_amount
+        );
         let multisig = &mut ctx.accounts.multisig;
         let join_custodial_account = &mut ctx.accounts.join_custodial_account;
         let proposing_joiner = &mut ctx.accounts.proposing_joiner;
-        let proposing_joiner_ata: Pubkey = get_associated_token_address(&proposing_joiner.key(), &ctx.accounts.mint.key());
+        let proposing_joiner_ata: Pubkey =
+            get_associated_token_address(&proposing_joiner.key(), &ctx.accounts.mint.key());
         require_keys_eq!(
             ctx.accounts.proposing_joiner_ata.key(),
             proposing_joiner_ata,
             ErrorCode::InvalidDestinationOwner
         );
 
-        require!(join_amount == multisig.join_amount, ErrorCode::JoiningAmountShouldMatchTargetWallet);
-        require!(!multisig.members.contains(proposing_joiner.key), ErrorCode::DuplicateMember);
-        require!(multisig.members.len() < SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE, ErrorCode::MaxMembersReached);
+        require!(
+            join_amount == multisig.join_amount,
+            ErrorCode::JoiningAmountShouldMatchTargetWallet
+        );
+        require!(
+            !multisig.members.contains(proposing_joiner.key),
+            ErrorCode::DuplicateMember
+        );
+        require!(
+            multisig.members.len() < SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE,
+            ErrorCode::MaxMembersReached
+        );
 
         let transfer_cpi = TransferChecked {
             from: ctx.accounts.proposing_joiner_ata.to_account_info(),
@@ -222,10 +288,15 @@ pub mod squad_mint_multi_sig {
     // when a user wants to join as an escrow revert to them in rejected
     // must pass a joining ID account_handle-user_handle or UUID not sure
 
-    pub fn create_proposal(ctx: Context<CreateProposal>,
-                           amount: u64,
-                           proposed_to_account: Pubkey) -> Result<()> {
-        msg!("Initiate vote Create Proposal, called from: {:?}", ctx.program_id);
+    pub fn create_proposal(
+        ctx: Context<CreateProposal>,
+        amount: u64,
+        proposed_to_account: Pubkey,
+    ) -> Result<()> {
+        msg!(
+            "Initiate vote Create Proposal, called from: {:?}",
+            ctx.program_id
+        );
         let transaction = &mut ctx.accounts.transaction;
         let multisig = &mut ctx.accounts.multisig;
         let proposer = ctx.accounts.proposer.key();
@@ -233,11 +304,23 @@ pub mod squad_mint_multi_sig {
             ctx.accounts.proposed_to_owner.key(),
             proposed_to_account,
             ErrorCode::InvalidDestinationOwner
-         );
-        require!(!multisig.has_active_vote, ErrorCode::CanOnlyInitOneVoteAtATime);
-        require!(multisig.members.contains(&proposer), ErrorCode::MemberNotPartOfFund);
-        require!(amount >= SquadMintFund::SQUAD_MINT_MIN_AMOUNT, ErrorCode::InvalidProposalAmount);
-        require!(ctx.accounts.multisig_ata.amount >= amount, ErrorCode::InsufficientFunds); // v2 will have this check as joining fee will add money here
+        );
+        require!(
+            !multisig.has_active_vote,
+            ErrorCode::CanOnlyInitOneVoteAtATime
+        );
+        require!(
+            multisig.members.contains(&proposer),
+            ErrorCode::MemberNotPartOfFund
+        );
+        require!(
+            amount >= SquadMintFund::SQUAD_MINT_MIN_AMOUNT,
+            ErrorCode::InvalidProposalAmount
+        );
+        require!(
+            ctx.accounts.multisig_ata.amount >= amount,
+            ErrorCode::InsufficientFunds
+        ); // v2 will have this check as joining fee will add money here
 
         transaction.belongs_to_squad_mint_fund = multisig.key();
         transaction.message_data = TransactionMessage {
@@ -262,9 +345,11 @@ pub mod squad_mint_multi_sig {
         Ok(())
     }
 
-    pub fn submit_and_execute(ctx: Context<SubmitAndExecute>,
-                              vote: bool) -> Result<()> {
-        msg!("Initiate vote to transfer, called from: {:?}", ctx.program_id);
+    pub fn submit_and_execute(ctx: Context<SubmitAndExecute>, vote: bool) -> Result<()> {
+        msg!(
+            "Initiate vote to transfer, called from: {:?}",
+            ctx.program_id
+        );
 
         let transaction = &mut ctx.accounts.transaction;
         let multisig = &mut ctx.accounts.multisig;
@@ -273,25 +358,43 @@ pub mod squad_mint_multi_sig {
         require!(!transaction.did_meet_threshold, ErrorCode::AlreadyExecuted);
 
         require!(!multisig.members.is_empty(), ErrorCode::HasNoActiveVote);
-        require_keys_eq!(transaction.belongs_to_squad_mint_fund, multisig.key(), ErrorCode::ProposalFundMismatch);
+        require_keys_eq!(
+            transaction.belongs_to_squad_mint_fund,
+            multisig.key(),
+            ErrorCode::ProposalFundMismatch
+        );
         require_keys_eq!(
             ctx.accounts.proposed_to_owner.key(),
             transaction.message_data.proposed_to_account,
             ErrorCode::InvalidDestinationOwner
         );
-        let proposed_to_ata: Pubkey = get_associated_token_address(&transaction.message_data.proposed_to_account, &ctx.accounts.mint.key());
+        let proposed_to_ata: Pubkey = get_associated_token_address(
+            &transaction.message_data.proposed_to_account,
+            &ctx.accounts.mint.key(),
+        );
         require_keys_eq!(
             proposed_to_ata,
             ctx.accounts.proposed_to_ata.key(),
             ErrorCode::InvalidDestinationOwner
         );
 
-        let submitter_has_voted = transaction.executors.contains(&ctx.accounts.submitter.key());
+        let submitter_has_voted = transaction
+            .executors
+            .contains(&ctx.accounts.submitter.key());
         if !submitter_has_voted {
-            require!(multisig.members.contains(&ctx.accounts.submitter.key()), ErrorCode::MemberNotPartOfFund);
+            require!(
+                multisig.members.contains(&ctx.accounts.submitter.key()),
+                ErrorCode::MemberNotPartOfFund
+            );
             transaction.executors.push(ctx.accounts.submitter.key());
             transaction.votes.push(vote);
-            msg!("Has Voted {} on Fund {} to Fund {}. The vote: {}", &ctx.accounts.submitter.key(), multisig.key(), transaction.message_data.proposed_to_account.key() , if vote { "YES" } else { "NO" })
+            msg!(
+                "Has Voted {} on Fund {} to Fund {}. The vote: {}",
+                &ctx.accounts.submitter.key(),
+                multisig.key(),
+                transaction.message_data.proposed_to_account.key(),
+                if vote { "YES" } else { "NO" }
+            )
         }
 
         let yes_votes = transaction.votes.iter().filter(|&&v| v).count() as u64;
@@ -310,14 +413,21 @@ pub mod squad_mint_multi_sig {
                 .checked_add(1)
                 .ok_or(ErrorCode::NonceOverflow)?;
             if yes_meets {
-                msg!("Attempting to send funds to {:?} and multisig Key: {:?}", ctx.accounts.proposed_to_ata.key(), multisig.key() );
+                msg!(
+                    "Attempting to send funds to {:?} and multisig Key: {:?}",
+                    ctx.accounts.proposed_to_ata.key(),
+                    multisig.key()
+                );
                 let amount = transaction.message_data.amount;
-                require!(ctx.accounts.multisig_ata.amount >= amount, ErrorCode::InsufficientFunds);
+                require!(
+                    ctx.accounts.multisig_ata.amount >= amount,
+                    ErrorCode::InsufficientFunds
+                );
                 let multisig_owner_key = multisig.owner.key();
                 let multisig_seeds = &[
                     multisig.account_handle.as_bytes(),
                     multisig_owner_key.as_ref(),
-                    &[ctx.bumps.multisig]
+                    &[ctx.bumps.multisig],
                 ];
 
                 let signer_seeds = &[&multisig_seeds[..]];
@@ -335,15 +445,24 @@ pub mod squad_mint_multi_sig {
                 );
                 transfer_checked(cpi_ctx, amount, ctx.accounts.mint.decimals)?;
 
-                msg!("TRANSFERRED {} to {}", amount, transaction.message_data.proposed_to_account);
+                msg!(
+                    "TRANSFERRED {} to {}",
+                    amount,
+                    transaction.message_data.proposed_to_account
+                );
             }
-            msg!("Threshold met , Exiting transaction {}. Submitter: {}", transaction.key(), ctx.accounts.submitter.key());
-            ctx.accounts.transaction.close(ctx.accounts.fee_payer.to_account_info())?;
+            msg!(
+                "Threshold met , Exiting transaction {}. Submitter: {}",
+                transaction.key(),
+                ctx.accounts.submitter.key()
+            );
+            ctx.accounts
+                .transaction
+                .close(ctx.accounts.fee_payer.to_account_info())?;
             return Ok(());
         }
         Ok(())
     }
-
 }
 
 #[derive(Accounts)]
@@ -385,16 +504,17 @@ pub struct Initialize<'info> {
 #[account]
 #[derive(Default, Debug)]
 pub struct SquadMintFund {
-    owner: Pubkey,     // This is the person that init creating this fund he will soon add contributors
+    owner: Pubkey, // This is the person that init creating this fund he will soon add contributors
     account_handle: String, // convert to [u8; 15]
     has_active_vote: bool,
     members: Vec<Pubkey>,
-    join_amount: u64, // u32
+    join_amount: u64,  // u32
     master_nonce: u64, // u32
 }
 //
 #[derive(Accounts)]
-pub struct CreateProposal<'info> { // This is a payment proposal
+pub struct CreateProposal<'info> {
+    // This is a payment proposal
     #[account(init,
               payer = fee_payer,
               seeds = [b"proposal_tx_data", multisig.key().as_ref(), multisig.master_nonce.to_le_bytes().as_ref()],
@@ -484,10 +604,7 @@ pub struct AddMember<'info> {
         bump
     )]
     pub multisig: Account<'info, SquadMintFund>,
-    #[account(
-        mut,
-        signer
-    )]
+    #[account(mut, signer)]
     pub fee_payer: Signer<'info>,
     #[account(
         signer,
@@ -536,10 +653,7 @@ pub struct RejectMember<'info> {
         bump
     )]
     pub multisig: Account<'info, SquadMintFund>,
-    #[account(
-        mut,
-        signer
-    )]
+    #[account(mut, signer)]
     pub fee_payer: Signer<'info>,
     #[account(
         signer,
@@ -595,14 +709,14 @@ pub struct Transaction {
     pub executors: Vec<Pubkey>,             // Verified signer Pubkeys
     pub votes: Vec<bool>,                   //
     pub message_data: TransactionMessage,   // Signable message
-    pub did_meet_threshold: bool            // Replay protection
+    pub did_meet_threshold: bool,           // Replay protection
 }
 #[account]
 #[derive(Default, Debug)]
 pub struct JoinRequestCustodialWallet {
     pub request_to_join_squad_mint_fund: Pubkey,
     pub request_to_join_user: Pubkey,
-    join_amount: u64 // it will be added to the pool of the squad
+    join_amount: u64, // it will be added to the pool of the squad
 }
 
 // This is what the members of this fund will sign
@@ -677,13 +791,12 @@ impl SquadMintFund {
 
     // Borsh on-chain byte budget. The 8-byte account discriminator is added
     // separately at the `space = 8 + MAX_SIZE` constraint.
-    pub const MAX_SIZE: usize =
-        32                                                      // owner
+    pub const MAX_SIZE: usize = 32                                                      // owner
         + (4 + Self::SQUAD_MINT_MAX_HANDLE_SIZE)                // account_handle: 4-byte len + bytes
         + 1                                                     // has_active_vote
         + (4 + Self::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE * 32)    // members: 4-byte len + pubkeys
         + 8                                                     // join_amount
-        + 8;                                                    // master_nonce
+        + 8; // master_nonce
 }
 
 impl TransactionMessage {
@@ -697,12 +810,11 @@ impl JoinRequestCustodialWallet {
 }
 
 impl Transaction {
-    pub const MAX_SIZE: usize =
-        32                                                          // belongs_to_squad_mint_fund
+    pub const MAX_SIZE: usize = 32                                                          // belongs_to_squad_mint_fund
         + (4 + SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE * 32) // executors: len + pubkeys
         + (4 + SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE)      // votes: len + 1 byte/bool
         + TransactionMessage::SIZE                                    // message_data
-        + 1;                                                         // did_meet_threshold
+        + 1; // did_meet_threshold
 }
 
 #[error_code]

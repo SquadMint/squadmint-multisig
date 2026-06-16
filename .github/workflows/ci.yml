@@ -58,6 +58,26 @@ jobs:
       - name: Add Solana to PATH
         run: echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
 
+      # Stable program id across CI runs WITHOUT committing the keypair to the
+      # public repo: cache it under a static key. First run generates it (cache
+      # miss) and saves it post-job; later runs restore the same one. This step
+      # runs AFTER the Cargo cache restore so it wins over any stale target/.
+      # Bump -v1 to rotate the id.
+      - name: Cache program keypair
+        uses: actions/cache@v4
+        with:
+          path: target/deploy/squad_mint_multi_sig-keypair.json
+          key: ${{ runner.os }}-program-keypair-v1
+
+      - name: Ensure program keypair exists
+        run: |
+          mkdir -p target/deploy
+          if [ ! -f target/deploy/squad_mint_multi_sig-keypair.json ]; then
+            solana-keygen new --no-bip39-passphrase --silent \
+              -o target/deploy/squad_mint_multi_sig-keypair.json
+          fi
+          echo "program id: $(solana address -k target/deploy/squad_mint_multi_sig-keypair.json)"
+
       - name: Install Anchor CLI
         run: |
           if ! anchor --version 2>/dev/null | grep -q "${{ env.ANCHOR_VERSION }}"; then
@@ -70,13 +90,16 @@ jobs:
       - name: Install Node dependencies
         run: yarn install
 
-      - name: Build and sync program keys
+      # Sync declare_id!/Anchor.toml to the cached keypair FIRST, then build so
+      # the .so embeds the matching id (the old order built before syncing,
+      # which is what caused DeclaredProgramIdMismatch / error 4100).
+      - name: Sync program keys and build
         run: |
-          anchor build
           anchor keys sync
+          anchor build
 
       - name: Run tests
-        run: anchor test --provider.cluster localnet --provider.wallet ~/.config/solana/id.json
+        run: anchor test --skip-build --provider.cluster localnet --provider.wallet ~/.config/solana/id.json
 
   # M-1: prove the mainnet build refuses to compile without an explicit mint,
   # and that the canonical mainnet USDC is what gets pinned when it's supplied.
@@ -153,107 +176,3 @@ jobs:
       # Manual alternative (if you prefer not to pin a third-party action):
       #   curl -L https://raw.githubusercontent.com/auditware/radar/main/install-radar.sh | bash
       #   radar -p programs
-
-  # On-chain Rust coverage from the existing TypeScript suite.
-  # Uses Trail of Bits' anchor-coverage: it wraps `anchor test` against a
-  # patched solana-test-validator that dumps SBF execution traces, then maps
-  # them to source lines via DWARF debug info -> LCOV.
-  #   https://github.com/trailofbits/anchor-coverage
-  # Advisory (continue-on-error): the patched validator tracks Agave 3.x while
-  # the main test job pins ${SOLANA_VERSION}; promote to a hard gate once the
-  # numbers stabilize. NOTE: DWARF-based line counts are approximate — treat
-  # uncovered *regions* as signal, exact hit counts as noise.
-  coverage:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-coverage-${{ env.ANCHOR_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-coverage-${{ env.ANCHOR_VERSION }}-
-
-      - name: Install lcov
-        run: sudo apt-get update && sudo apt-get install -y lcov
-
-      # Patched agave tools (solana-test-validator with SBF trace support).
-      # Releases: https://github.com/trail-of-forks/sbpf-coverage/releases
-      - name: Install patched solana-test-validator
-        run: |
-          curl -L -o patched-agave.tar.gz \
-            https://github.com/trail-of-forks/sbpf-coverage/releases/download/v3.0.9/patched-agave-tools-v3.0.9-Linux.tar.gz
-          mkdir -p "$HOME/patched-agave"
-          tar -xzf patched-agave.tar.gz -C "$HOME/patched-agave"
-          # Prepend so the patched binaries win over any other solana install.
-          dirname "$(find "$HOME/patched-agave" -name solana-test-validator | head -1)" >> $GITHUB_PATH
-
-      - name: Install Anchor CLI
-        run: |
-          if ! anchor --version 2>/dev/null | grep -q "${{ env.ANCHOR_VERSION }}"; then
-            cargo install --git https://github.com/coral-xyz/anchor --tag v${{ env.ANCHOR_VERSION }} anchor-cli --locked --force
-          fi
-
-      - name: Install anchor-coverage
-        run: cargo install --git https://github.com/trailofbits/anchor-coverage --locked --force
-
-      - name: Setup wallet keypair
-        run: |
-          if ! command -v solana-keygen >/dev/null; then
-            sh -c "$(curl -sSfL https://release.anza.xyz/v${{ env.SOLANA_VERSION }}/install)"
-            echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
-            export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
-          fi
-          solana-keygen new --no-bip39-passphrase
-
-      # Coverage needs DWARF info in the .so; CI-only tweak so the production
-      # artifact (and its rent cost) is unaffected.
-      - name: Enable debug info for coverage build
-        run: |
-          if grep -q '^\[profile\.release\]' Cargo.toml; then
-            sed -i '/^\[profile\.release\]/a debug = true' Cargo.toml
-          else
-            printf '\n[profile.release]\ndebug = true\n' >> Cargo.toml
-          fi
-
-      - name: Install Node dependencies
-        run: yarn install
-
-      - name: Build and sync program keys
-        run: |
-          anchor build
-          anchor keys sync
-
-      - name: Run tests under coverage
-        run: anchor-coverage --provider.cluster localnet --provider.wallet ~/.config/solana/id.json
-
-      - name: Coverage summary
-        run: |
-          lcov --summary sbf_trace_dir/*.lcov | tee coverage-summary.txt
-          genhtml --output-directory coverage-html sbf_trace_dir/*.lcov
-
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: |
-            coverage-html/
-            sbf_trace_dir/*.lcov
-            coverage-summary.txt
