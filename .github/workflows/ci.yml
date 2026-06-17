@@ -105,6 +105,32 @@ jobs:
       - name: Run tests
         run: anchor test --provider.cluster localnet --provider.wallet ~/.config/solana/id.json
 
+  # The program id must always be pinned to BW1dtKf... in the committed source.
+  # Runs on a PRISTINE checkout (no keypair restore / no sed), so it catches an
+  # accidental `anchor keys sync` commit or any change to declare_id!/Anchor.toml.
+  verify-program-id:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: declare_id! and Anchor.toml must pin BW1dtKf...
+        run: |
+          EXPECTED=BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz
+          ACTUAL=$(grep -oP 'declare_id!\("\K[^"]+' programs/squad_mint_multi_sig/src/lib.rs)
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::declare_id! is '$ACTUAL', expected '$EXPECTED'"
+            exit 1
+          fi
+          # Every program id entry in Anchor.toml must also be BW1dtKf...
+          BAD=$(grep -oP 'squad_mint_multi_sig = "\K[^"]+' Anchor.toml \
+                | grep -vx "$EXPECTED" || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::Anchor.toml has non-canonical program id(s): $BAD"
+            exit 1
+          fi
+          echo "OK: program id pinned to $EXPECTED"
+
   # M-1: prove the mainnet build refuses to compile without an explicit mint,
   # and that the canonical mainnet USDC is what gets pinned when it's supplied.
   verify-mainnet-mint:
