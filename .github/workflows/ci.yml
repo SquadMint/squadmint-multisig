@@ -37,6 +37,10 @@ jobs:
       # hand-rolled actions/cache for ~/.cargo + target/).
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
+        with:
+          # Save the cache even on a failed job — otherwise a red run (this job
+          # has had plenty) never persists a cache, so every run starts cold.
+          cache-on-failure: true
 
       # rust-cache does NOT cache ~/.cargo/bin, so cache the prebuilt anchor
       # binary separately to avoid recompiling anchor-cli (~5 min) every run.
@@ -140,6 +144,10 @@ jobs:
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
+        with:
+          # Save the cache even on a failed job — otherwise a red run (this job
+          # has had plenty) never persists a cache, so every run starts cold.
+          cache-on-failure: true
 
       - name: Mainnet build MUST fail when SQUADMINT_USDC_MINT is unset
         run: |
@@ -170,6 +178,10 @@ jobs:
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
+        with:
+          # Save the cache even on a failed job — otherwise a red run (this job
+          # has had plenty) never persists a cache, so every run starts cold.
+          cache-on-failure: true
 
       - name: rustfmt
         run: cargo fmt --all --check
