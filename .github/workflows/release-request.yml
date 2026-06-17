@@ -51,19 +51,34 @@ jobs:
           sh -c "$(curl -sSfL https://release.anza.xyz/v${SOLANA_VERSION}/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
 
-      - name: Install Anchor
-        run: |
-          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
-          avm install "${ANCHOR_VERSION}"
-          avm use "${ANCHOR_VERSION}"
+      # Install anchor-cli directly (pinned tag + --locked) instead of via avm:
+      # avm's deps now require rustc >=1.91, which breaks under the pinned 1.86,
+      # whereas anchor-cli@v0.31.1's locked deps build fine on 1.86.
+      - name: Install Anchor CLI
+        run: cargo install --git https://github.com/coral-xyz/anchor --tag v${{ env.ANCHOR_VERSION }} anchor-cli --locked --force
 
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
       # GATE: a failed test step fails the job; nothing below runs.
+      # Restore the REAL program keypair from the secret so the test runs under
+      # declare_id! (BW1...) — the same id the verifiable build below ships. We
+      # do NOT use the ephemeral sed fallback here: that would rewrite declare_id!
+      # and the release artifact would carry the wrong program id. Fail fast if
+      # the secret is missing.
       - name: Tests (gate)
+        env:
+          PROGRAM_KEYPAIR: ${{ secrets.PROGRAM_KEYPAIR }}
         run: |
+          set -euo pipefail
+          test -n "${PROGRAM_KEYPAIR:-}" || { echo "::error::PROGRAM_KEYPAIR secret is required for releases"; exit 1; }
+          mkdir -p target/deploy
+          printf '%s' "$PROGRAM_KEYPAIR" > target/deploy/squad_mint_multi_sig-keypair.json
+          KP_ID=$(solana address -k target/deploy/squad_mint_multi_sig-keypair.json)
+          DECL=$(grep -oP 'declare_id!\("\K[^"]+' programs/squad_mint_multi_sig/src/lib.rs)
+          [ "$KP_ID" = "$DECL" ] || { echo "::error::program keypair ($KP_ID) != declare_id! ($DECL)"; exit 1; }
+          echo "Program id: $KP_ID"
           solana-keygen new --no-bip39-passphrase -o ~/.config/solana/id.json
           solana-keygen new --no-bip39-passphrase -o ~/keypair-dev-1.json
           yarn install --frozen-lockfile
