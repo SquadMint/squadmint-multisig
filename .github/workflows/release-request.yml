@@ -1,0 +1,154 @@
+name: Release (on publish)
+
+# Fires when a maintainer PUBLISHES a GitHub Release whose tag is vX.Y.Z.
+# Creating a release requires repo write access, so this trigger is inherently
+# gated to maintainers — no public surface (unlike issues).
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  RUST_VERSION: "1.86.0"
+  SOLANA_VERSION: "2.1.21"
+  ANCHOR_VERSION: "0.31.1"
+  NODE_VERSION: "22"
+  PROGRAM_SO: "target/verifiable/squad_mint_multi_sig.so"
+  BUFFER_REFUND: "213ho2JipFkUEvio4CeLehku3cVBs2eqAW18mv7TTSXY"
+  AUTHORITY_ADDRESS: "ANNvGaawEDSatXvzMnz1Tr6HrKHaFebo8UrPprAvxAvL"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve & validate version from the release tag
+        id: ver
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ "$TAG" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "branch=release/${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release tag '$TAG' must be 'vX.Y.Z'"; exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Install Solana
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v${SOLANA_VERSION}/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Install Anchor
+        run: |
+          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
+          avm install "${ANCHOR_VERSION}"
+          avm use "${ANCHOR_VERSION}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # GATE: a failed test step fails the job; nothing below runs.
+      - name: Tests (gate)
+        run: |
+          solana-keygen new --no-bip39-passphrase -o ~/.config/solana/id.json
+          solana-keygen new --no-bip39-passphrase -o ~/keypair-dev-1.json
+          yarn install --frozen-lockfile
+          anchor test
+
+      - name: Verifiable prod build
+        run: anchor run build-prod-verifiable
+
+      - name: Hash the artifact
+        id: hash
+        run: echo "sha256=$(sha256sum "${PROGRAM_SO}" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      # Attach the .so (+ checksum) to the release that triggered this run.
+      - name: Attach .so to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum "${PROGRAM_SO}" > squad_mint_multi_sig.so.sha256
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "${PROGRAM_SO}" squad_mint_multi_sig.so.sha256 --clobber
+
+      # Keypair to $HOME (never the repo) so it can't be committed.
+      - name: Point CLI at mainnet + deployer
+        run: |
+          solana config set --url "${{ secrets.RPC_URL }}"
+          printf '%s' '${{ secrets.DEPLOYER_KEYPAIR }}' > "$HOME/deployer.json"
+          solana config set --keypair "$HOME/deployer.json"
+
+      - name: Write buffer & set authority to the vault
+        id: buffer
+        run: |
+          solana program write-buffer "${PROGRAM_SO}" | tee /tmp/wb.txt
+          BUFFER="$(sed -n 's/^Buffer: //p' /tmp/wb.txt | tr -d '[:space:]')"
+          test -n "$BUFFER" || { echo "could not parse buffer address"; exit 1; }
+          solana program set-buffer-authority "$BUFFER" \
+            --new-buffer-authority "${AUTHORITY_ADDRESS}" \
+            --skip-new-buffer-authority-signer-check
+          echo "buffer=$BUFFER" >> "$GITHUB_OUTPUT"
+
+      - name: Update README release block
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          SHA: ${{ steps.hash.outputs.sha256 }}
+          BUFFER: ${{ steps.buffer.outputs.buffer }}
+          PROGRAM_ID: ${{ vars.PROGRAM_ID }}
+        run: |
+          python3 - <<'PY'
+          import os, re, datetime
+          ver, sha, buf = os.environ["VERSION"], os.environ["SHA"], os.environ["BUFFER"]
+          prog, now = os.environ["PROGRAM_ID"], datetime.date.today().isoformat()
+          block = (
+            "<!-- RELEASE-INFO:START -->\n"
+            f"- **Version:** {ver}\n"
+            f"- **Program ID:** {prog}\n"
+            f"- **Verifiable .so SHA-256:** `{sha}`\n"
+            f"- **Upgrade buffer:** {buf}\n"
+            f"- **Prepared:** {now}\n"
+            "<!-- RELEASE-INFO:END -->"
+          )
+          p = "README.md"; s = open(p).read()
+          pat = re.compile(r"<!-- RELEASE-INFO:START -->.*?<!-- RELEASE-INFO:END -->", re.S)
+          s = pat.sub(block, s) if pat.search(s) else s + "\n\n## Latest mainnet release\n\n" + block + "\n"
+          open(p, "w").write(s)
+          PY
+
+      # Branch release/vX.Y.Z, commit ONLY the README, open the PR to main.
+      - name: Open PR to main
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: ${{ steps.ver.outputs.branch }}
+          base: main
+          add-paths: README.md
+          commit-message: "release: ${{ steps.ver.outputs.version }}"
+          title: "Release ${{ steps.ver.outputs.version }}"
+          body: |
+            Automated from published release **${{ steps.ver.outputs.version }}**.
+
+            ## Squads upgrade — paste these into the Squads app
+            - **Name of the upgrade:** ${{ steps.ver.outputs.version }}
+            - **Buffer Address:** ${{ steps.buffer.outputs.buffer }}
+            - **Buffer Refund:** ${{ env.BUFFER_REFUND }}
+            - **Commit Link:** ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+            - **Authority Address:** ${{ env.AUTHORITY_ADDRESS }}
+
+            ## Build
+            - Program ID: `${{ vars.PROGRAM_ID }}`
+            - Verifiable `.so` SHA-256: `${{ steps.hash.outputs.sha256 }}`
+            - Tests passed; `.so` attached to release ${{ steps.ver.outputs.version }}.

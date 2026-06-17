@@ -1,0 +1,198 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Must match Anchor.toml's [toolchain] solana_version, otherwise `anchor test`
+  # tries to manage a version that isn't installed.
+  SOLANA_VERSION: "2.1.21"
+  ANCHOR_VERSION: "0.31.1"
+  NODE_VERSION: "20"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Cargo registry + target cache, purpose-built for Rust (replaces the
+      # hand-rolled actions/cache for ~/.cargo + target/).
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      # rust-cache does NOT cache ~/.cargo/bin, so cache the prebuilt anchor
+      # binary separately to avoid recompiling anchor-cli (~5 min) every run.
+      - name: Cache Anchor CLI
+        id: cache-anchor
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/anchor
+          key: ${{ runner.os }}-anchor-${{ env.ANCHOR_VERSION }}
+
+      # Install Solana FRESH every run. Caching ~/.local/share/solana restored a
+      # broken install whose `agave-install list` failed inside `anchor test`
+      # ("Failed to list installed solana versions"); a clean install avoids it.
+      - name: Install Solana CLI
+        run: sh -c "$(curl -sSfL https://release.anza.xyz/v${{ env.SOLANA_VERSION }}/install)"
+
+      - name: Add Solana to PATH
+        run: echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      - name: Install Anchor CLI
+        if: steps.cache-anchor.outputs.cache-hit != 'true'
+        run: cargo install --git https://github.com/coral-xyz/anchor --tag v${{ env.ANCHOR_VERSION }} anchor-cli --locked --force
+
+      - name: Setup wallet keypair
+        run: solana-keygen new --no-bip39-passphrase
+
+      - name: Install Node dependencies
+        run: yarn install
+
+      # Restore the program keypair so the deployed program id matches
+      # declare_id! (avoids DeclaredProgramIdMismatch / error 4100).
+      #
+      # SECURITY: the secret is injected ONLY on push to main (post-merge,
+      # reviewed code). On every PR event the expression short-circuits to ''
+      # so the secret is never placed in the environment — a malicious PR
+      # (fork OR same-repo) therefore has nothing to exfiltrate. Set it once:
+      #   gh secret set PROGRAM_KEYPAIR < target/deploy/squad_mint_multi_sig-keypair.json
+      #
+      # When the secret is absent (all PRs) we mint a throwaway keypair and
+      # rewrite declare_id!/Anchor.toml to it via sed (more reliable than
+      # `anchor keys sync`). The id won't be BW1dtKf... but tests don't care.
+      - name: Restore program keypair
+        env:
+          PROGRAM_KEYPAIR: ${{ github.event_name == 'push' && secrets.PROGRAM_KEYPAIR || '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/deploy
+          KP=target/deploy/squad_mint_multi_sig-keypair.json
+          if [ -n "${PROGRAM_KEYPAIR:-}" ]; then
+            printf '%s' "$PROGRAM_KEYPAIR" > "$KP"
+            echo "Using PROGRAM_KEYPAIR secret -> program id: $(solana address -k "$KP")"
+          else
+            echo "No PROGRAM_KEYPAIR (PR run); generating an ephemeral program id."
+            solana-keygen new --no-bip39-passphrase --silent --force -o "$KP"
+            NEW_ID=$(solana address -k "$KP")
+            OLD_ID=$(grep -oP 'declare_id!\("\K[^"]+' programs/squad_mint_multi_sig/src/lib.rs)
+            sed -i "s/${OLD_ID}/${NEW_ID}/g" \
+              programs/squad_mint_multi_sig/src/lib.rs Anchor.toml
+            echo "Ephemeral program id: $NEW_ID"
+          fi
+
+      - name: Run tests
+        run: anchor test --provider.cluster localnet --provider.wallet ~/.config/solana/id.json
+
+  # The program id must always be pinned to BW1dtKf... in the committed source.
+  # Runs on a PRISTINE checkout (no keypair restore / no sed), so it catches an
+  # accidental `anchor keys sync` commit or any change to declare_id!/Anchor.toml.
+  verify-program-id:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: declare_id! and Anchor.toml must pin BW1dtKf...
+        run: |
+          EXPECTED=BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz
+          ACTUAL=$(grep -oP 'declare_id!\("\K[^"]+' programs/squad_mint_multi_sig/src/lib.rs)
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::declare_id! is '$ACTUAL', expected '$EXPECTED'"
+            exit 1
+          fi
+          # Every program id entry in Anchor.toml must also be BW1dtKf...
+          BAD=$(grep -oP 'squad_mint_multi_sig = "\K[^"]+' Anchor.toml \
+                | grep -vx "$EXPECTED" || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::Anchor.toml has non-canonical program id(s): $BAD"
+            exit 1
+          fi
+          echo "OK: program id pinned to $EXPECTED"
+
+  # M-1: prove the mainnet build refuses to compile without an explicit mint,
+  # and that the canonical mainnet USDC is what gets pinned when it's supplied.
+  verify-mainnet-mint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Mainnet build MUST fail when SQUADMINT_USDC_MINT is unset
+        run: |
+          if cargo build -p squad_mint_multi_sig --features mainnet 2>/dev/null; then
+            echo "::error::mainnet build succeeded without SQUADMINT_USDC_MINT — env! guard is broken"
+            exit 1
+          fi
+          echo "OK: mainnet build correctly refuses to compile without the mint env var"
+
+      - name: Canonical mainnet USDC is pinned when supplied
+        env:
+          SQUADMINT_USDC_MINT: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+        run: cargo test -p squad_mint_multi_sig --features mainnet
+
+  # Security gate (the "Danger"-style PR enforcement):
+  # rustfmt + clippy are hard blockers; the security scanner is advisory until
+  # its findings are triaged (flip continue-on-error to false to make it block).
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (with clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy (warnings are errors)
+        run: cargo clippy --all-targets -- -D warnings
+
+  # Solana-specific static analysis — missing owner/signer checks, arithmetic
+  # overflow, PDA seed issues, account substitution, etc.
+  # Radar: https://github.com/Auditware/radar
+  static-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Advisory for now: confirm the action ref/inputs against Radar's current
+    # README, triage findings, then set this to false to make it a hard gate.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Radar static analysis
+        uses: Auditware/radar-action@main
+        with:
+          path: programs
+      # Manual alternative (if you prefer not to pin a third-party action):
+      #   curl -L https://raw.githubusercontent.com/auditware/radar/main/install-radar.sh | bash
+      #   radar -p programs

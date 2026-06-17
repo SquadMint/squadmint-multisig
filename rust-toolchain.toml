@@ -1,0 +1,8 @@
+# Pinned host Rust toolchain for reproducible builds.
+# Contemporaneous with Anchor 0.31.1 / Solana 2.1.x (April 2025).
+# Note: the on-chain SBF build uses the Rust bundled in Solana's platform-tools,
+# not this version — this pins the host-side compile + test toolchain only.
+# Adjust only as part of a deliberate, tested toolchain upgrade.
+[toolchain]
+channel = "1.86.0"
+components = ["rustfmt", "clippy"]

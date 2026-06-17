@@ -1,13 +1,14 @@
 [toolchain]
 package_manager = "yarn"
 anchor_version = "0.31.1"
+solana_version = "2.1.21"
 
 [features]
 resolution = true
 skip-lint = false
 
-#[programs.localnet]
-#squad_mint_multi_sig = "BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz"
+[programs.localnet]
+squad_mint_multi_sig = "BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz"
 
 [programs.devnet]
 squad_mint_multi_sig = "BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz"
@@ -15,13 +16,30 @@ squad_mint_multi_sig = "BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz"
 [registry]
 url = "https://api.apr.dev"
 
+# Tests MUST run on localnet: the suite creates the pinned test mint at a
+# fixed keypair, which can only ever succeed once per cluster (a fresh
+# test-validator ledger each run), and relies on unlimited airdrops.
+# `anchor test` on devnet also re-deploys the program on every run.
+# Deploy to devnet explicitly with `anchor run deploy-devnet` instead.
 [provider]
-cluster = "devnet"
+cluster = "localnet"
 wallet = "~/keypair-dev-1.json"
-
-#[provider]
-#cluster = "localnet"
-#wallet = "~/keypair-dev-1.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+# Build with the devnet mint pinned, then deploy with the devnet wallet.
+deploy-devnet = "anchor run build-devnet && anchor deploy --provider.cluster devnet --provider.wallet ~/keypair-dev-1.json"
+build-devnet = "SQUADMINT_USDC_MINT=GHCrkDPkTDigsEXMctzEsWc48nWPufcgaqqK4vexQX1f anchor build --provider.cluster devnet --provider.wallet ~/keypair-dev-1.json"
+# Reproducible mainnet artifact -> target/verifiable/squad_mint_multi_sig.so.
+build-prod-verifiable = "SQUADMINT_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v anchor build --verifiable -e SQUADMINT_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v -- --features mainnet"
+# NOTE: the program's upgrade authority is now the Squads multisig vault
+# (ANNvGaawEDSatXvzMnz1Tr6HrKHaFebo8UrPprAvxAvL), so you can NO LONGER
+# `anchor deploy`/upgrade directly — that needs the wallet to BE the authority
+# and will fail. Upgrades go through a buffer + multisig proposal:
+#   1. anchor run buffer-prod      # build verifiably + upload to a buffer (prints "Buffer: <addr>")
+#   2. solana program set-buffer-authority <BUFFER> \
+#        --new-buffer-authority ANNvGaawEDSatXvzMnz1Tr6HrKHaFebo8UrPprAvxAvL \
+#        --skip-new-buffer-authority-signer-check
+#   3. propose the upgrade in Squads (app, squads-multisig-cli, or the
+#      release/vX.X.X GitHub Action) -> members vote (incl. airgap signer) -> execute.
+buffer-prod = "anchor run build-prod-verifiable && solana program write-buffer target/verifiable/squad_mint_multi_sig.so"
