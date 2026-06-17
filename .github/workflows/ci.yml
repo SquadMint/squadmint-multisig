@@ -58,26 +58,6 @@ jobs:
       - name: Add Solana to PATH
         run: echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
 
-      # Stable program id across CI runs WITHOUT committing the keypair to the
-      # public repo: cache it under a static key. First run generates it (cache
-      # miss) and saves it post-job; later runs restore the same one. This step
-      # runs AFTER the Cargo cache restore so it wins over any stale target/.
-      # Bump -v1 to rotate the id.
-      - name: Cache program keypair
-        uses: actions/cache@v4
-        with:
-          path: target/deploy/squad_mint_multi_sig-keypair.json
-          key: ${{ runner.os }}-program-keypair-v1
-
-      - name: Ensure program keypair exists
-        run: |
-          mkdir -p target/deploy
-          if [ ! -f target/deploy/squad_mint_multi_sig-keypair.json ]; then
-            solana-keygen new --no-bip39-passphrase --silent \
-              -o target/deploy/squad_mint_multi_sig-keypair.json
-          fi
-          echo "program id: $(solana address -k target/deploy/squad_mint_multi_sig-keypair.json)"
-
       - name: Install Anchor CLI
         run: |
           if ! anchor --version 2>/dev/null | grep -q "${{ env.ANCHOR_VERSION }}"; then
@@ -90,16 +70,40 @@ jobs:
       - name: Install Node dependencies
         run: yarn install
 
-      # Sync declare_id!/Anchor.toml to the cached keypair FIRST, then build so
-      # the .so embeds the matching id (the old order built before syncing,
-      # which is what caused DeclaredProgramIdMismatch / error 4100).
-      - name: Sync program keys and build
+      # Restore the program keypair so the deployed program id matches
+      # declare_id! (avoids DeclaredProgramIdMismatch / error 4100).
+      #
+      # SECURITY: the secret is injected ONLY on push to main (post-merge,
+      # reviewed code). On every PR event the expression short-circuits to ''
+      # so the secret is never placed in the environment — a malicious PR
+      # (fork OR same-repo) therefore has nothing to exfiltrate. Set it once:
+      #   gh secret set PROGRAM_KEYPAIR < target/deploy/squad_mint_multi_sig-keypair.json
+      #
+      # When the secret is absent (all PRs) we mint a throwaway keypair and
+      # rewrite declare_id!/Anchor.toml to it via sed (more reliable than
+      # `anchor keys sync`). The id won't be BW1dtKf... but tests don't care.
+      - name: Restore program keypair
+        env:
+          PROGRAM_KEYPAIR: ${{ github.event_name == 'push' && secrets.PROGRAM_KEYPAIR || '' }}
         run: |
-          anchor keys sync
-          anchor build
+          set -euo pipefail
+          mkdir -p target/deploy
+          KP=target/deploy/squad_mint_multi_sig-keypair.json
+          if [ -n "${PROGRAM_KEYPAIR:-}" ]; then
+            printf '%s' "$PROGRAM_KEYPAIR" > "$KP"
+            echo "Using PROGRAM_KEYPAIR secret -> program id: $(solana address -k "$KP")"
+          else
+            echo "No PROGRAM_KEYPAIR (PR run); generating an ephemeral program id."
+            solana-keygen new --no-bip39-passphrase --silent --force -o "$KP"
+            NEW_ID=$(solana address -k "$KP")
+            OLD_ID=$(grep -oP 'declare_id!\("\K[^"]+' programs/squad_mint_multi_sig/src/lib.rs)
+            sed -i "s/${OLD_ID}/${NEW_ID}/g" \
+              programs/squad_mint_multi_sig/src/lib.rs Anchor.toml
+            echo "Ephemeral program id: $NEW_ID"
+          fi
 
       - name: Run tests
-        run: anchor test --skip-build --provider.cluster localnet --provider.wallet ~/.config/solana/id.json
+        run: anchor test --provider.cluster localnet --provider.wallet ~/.config/solana/id.json
 
   # M-1: prove the mainnet build refuses to compile without an explicit mint,
   # and that the canonical mainnet USDC is what gets pinned when it's supplied.
