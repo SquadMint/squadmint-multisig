@@ -1,11 +1,18 @@
-name: Release (on publish)
+name: Release (build, then publish draft)
 
-# Fires when a maintainer PUBLISHES a GitHub Release whose tag is vX.Y.Z.
-# Creating a release requires repo write access, so this trigger is inherently
-# gated to maintainers — no public surface (unlike issues).
+# Manually dispatched against an existing DRAFT release. GitHub Actions cannot
+# trigger on draft creation (draft releases don't fire release events), so we
+# invert it: build/test/buffer everything first and, only if all of that
+# succeeds, flip the draft to published as the final step. workflow_dispatch
+# requires repo write access, so this stays maintainer-gated with full secret
+# access.
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag of the DRAFT release to build & publish (vX.Y.Z)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -24,22 +31,41 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve & validate version from the release tag
+      - name: Resolve & validate version from the input tag
         id: ver
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.inputs.tag }}
         run: |
           if [[ "$TAG" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
             echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
             echo "branch=release/${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
           else
-            echo "Release tag '$TAG' must be 'vX.Y.Z'"; exit 1
+            echo "Tag '$TAG' must be 'vX.Y.Z'"; exit 1
           fi
 
+      # Build from the dispatched commit: the draft's tag ref doesn't exist yet
+      # (drafts don't create the git tag until published). Full history for the
+      # README PR step below.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
+
+      # The input must point at a real DRAFT so the final step has something to
+      # publish (and we don't silently re-process an already-public release).
+      - name: Verify a draft release exists for the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          isDraft=$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null || echo missing)
+          if [ "$isDraft" = "missing" ]; then
+            echo "::error::No release found for $TAG — create it as a draft first."; exit 1
+          fi
+          if [ "$isDraft" != "true" ]; then
+            echo "::error::Release $TAG is already published; expected a draft."; exit 1
+          fi
+          echo "OK: draft release $TAG found."
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -91,13 +117,14 @@ jobs:
         id: hash
         run: echo "sha256=$(sha256sum "${PROGRAM_SO}" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
-      # Attach the .so (+ checksum) to the release that triggered this run.
-      - name: Attach .so to the release
+      # Attach the .so (+ checksum) to the DRAFT release (still private at this
+      # point — it goes public only in the final publish step).
+      - name: Attach .so to the draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           sha256sum "${PROGRAM_SO}" > squad_mint_multi_sig.so.sha256
-          gh release upload "${{ github.event.release.tag_name }}" \
+          gh release upload "${{ github.event.inputs.tag }}" \
             "${PROGRAM_SO}" squad_mint_multi_sig.so.sha256 --clobber
 
       # Keypair to $HOME (never the repo) so it can't be committed.
@@ -114,8 +141,7 @@ jobs:
           BUFFER="$(sed -n 's/^Buffer: //p' /tmp/wb.txt | tr -d '[:space:]')"
           test -n "$BUFFER" || { echo "could not parse buffer address"; exit 1; }
           solana program set-buffer-authority "$BUFFER" \
-            --new-buffer-authority "${AUTHORITY_ADDRESS}" \
-            --skip-new-buffer-authority-signer-check
+            --new-buffer-authority "${AUTHORITY_ADDRESS}"
           echo "buffer=$BUFFER" >> "$GITHUB_OUTPUT"
 
       - name: Update README release block
@@ -167,3 +193,14 @@ jobs:
             - Program ID: `${{ vars.PROGRAM_ID }}`
             - Verifiable `.so` SHA-256: `${{ steps.hash.outputs.sha256 }}`
             - Tests passed; `.so` attached to release ${{ steps.ver.outputs.version }}.
+
+      # FINAL: everything above passed — flip the draft to published. Reached
+      # only on success, so a failure anywhere leaves the release as a draft.
+      # --target pins the published tag to the exact commit that was built.
+      - name: Publish the release (draft -> published)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          gh release edit "$TAG" --draft=false --target "${{ github.sha }}"
+          echo "Published $TAG at ${{ github.sha }}"
