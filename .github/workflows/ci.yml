@@ -11,7 +11,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SOLANA_VERSION: "2.1.7"
+  # Must match Anchor.toml's [toolchain] solana_version, otherwise `anchor test`
+  # tries to manage a version that isn't installed.
+  SOLANA_VERSION: "2.1.21"
   ANCHOR_VERSION: "0.31.1"
   NODE_VERSION: "20"
 
@@ -31,38 +33,32 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo
+      # Cargo registry + target cache, purpose-built for Rust (replaces the
+      # hand-rolled actions/cache for ~/.cargo + target/).
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      # rust-cache does NOT cache ~/.cargo/bin, so cache the prebuilt anchor
+      # binary separately to avoid recompiling anchor-cli (~5 min) every run.
+      - name: Cache Anchor CLI
+        id: cache-anchor
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ env.ANCHOR_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-${{ env.ANCHOR_VERSION }}-
+          path: ~/.cargo/bin/anchor
+          key: ${{ runner.os }}-anchor-${{ env.ANCHOR_VERSION }}
 
-      - name: Cache Solana CLI
-        uses: actions/cache@v4
-        id: cache-solana
-        with:
-          path: ~/.local/share/solana
-          key: ${{ runner.os }}-solana-${{ env.SOLANA_VERSION }}
-
+      # Install Solana FRESH every run. Caching ~/.local/share/solana restored a
+      # broken install whose `agave-install list` failed inside `anchor test`
+      # ("Failed to list installed solana versions"); a clean install avoids it.
       - name: Install Solana CLI
-        if: steps.cache-solana.outputs.cache-hit != 'true'
         run: sh -c "$(curl -sSfL https://release.anza.xyz/v${{ env.SOLANA_VERSION }}/install)"
 
       - name: Add Solana to PATH
         run: echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
 
       - name: Install Anchor CLI
-        run: |
-          if ! anchor --version 2>/dev/null | grep -q "${{ env.ANCHOR_VERSION }}"; then
-            cargo install --git https://github.com/coral-xyz/anchor --tag v${{ env.ANCHOR_VERSION }} anchor-cli --locked --force
-          fi
+        if: steps.cache-anchor.outputs.cache-hit != 'true'
+        run: cargo install --git https://github.com/coral-xyz/anchor --tag v${{ env.ANCHOR_VERSION }} anchor-cli --locked --force
 
       - name: Setup wallet keypair
         run: solana-keygen new --no-bip39-passphrase
@@ -142,6 +138,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Mainnet build MUST fail when SQUADMINT_USDC_MINT is unset
         run: |
           if cargo build -p squad_mint_multi_sig --features mainnet 2>/dev/null; then
@@ -169,17 +168,8 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-clippy-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-clippy-
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
 
       - name: rustfmt
         run: cargo fmt --all --check
