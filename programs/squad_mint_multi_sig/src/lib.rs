@@ -27,7 +27,6 @@ pub const USDC_MINT: Pubkey = Pubkey::from_str_const(match option_env!("SQUADMIN
 });
 
 // TODO: check is we need emit certain events as well to capture off app actions (FUTURE)
-// Add checkes for the mints are as expected
 #[program]
 pub mod squad_mint_multi_sig {
     use super::*;
@@ -727,12 +726,13 @@ pub struct RejectMember<'info> {
 
 #[account]
 #[derive(Default, Debug)]
-pub struct Transaction { // Payment Proposal TX
+pub struct Transaction {
+    // Payment Proposal TX
     pub belongs_to_squad_mint_fund: Pubkey, // Multisig account , this could be part of transaction message
-    pub voted_mask: u16, // bit i set = member i has cast a vote (participation)
-    pub votes: u16,      // bit i set = member i voted YES (NO leaves the bit clear)
+    pub voted_mask: u16,                    // bit i set = member i has cast a vote (participation)
+    pub votes: u16, // bit i set = member i voted YES (NO leaves the bit clear)
     pub message_data: TransactionMessage, // Signable message
-    pub did_meet_threshold: bool,         // Replay protection
+    pub did_meet_threshold: bool, // Replay protection
 }
 #[account]
 #[derive(Default, Debug)]
