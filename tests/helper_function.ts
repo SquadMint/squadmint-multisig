@@ -11,6 +11,26 @@ import {Connection, Keypair, PublicKey} from "@solana/web3.js";
 
 const { utf8 } = anchor.utils.bytes
 const decimals = 6
+const HANDLE_SIZE = 15;
+
+// Convert a handle string into the fixed [u8; 15] form the program stores and
+// seeds the fund PDA with (UTF-8 left-aligned, right-padded with NUL bytes).
+// The on-chain instruction takes [u8; 15], so callers must pass this, and PDA
+// derivation must use these exact bytes.
+const encodeHandle = (handle: string): number[] => {
+    const bytes = Buffer.from(handle, "utf8");
+    if (bytes.length === 0 || bytes.length > HANDLE_SIZE) {
+        throw new Error(`handle must be 1..=${HANDLE_SIZE} bytes, got ${bytes.length}`);
+    }
+    const out = new Array(HANDLE_SIZE).fill(0);
+    bytes.forEach((b, i) => (out[i] = b));
+    return out;
+};
+
+// Decode the on-chain fixed [u8; 15] account_handle (NUL-padded) back into the
+// original UTF-8 string. Anchor deserializes the array as number[].
+const decodeHandle = (raw: number[] | Uint8Array): string =>
+    Buffer.from(raw as number[]).toString("utf8").replace(/\0+$/, "");
 /// Creates wallet and adds this blockchain.
 
 class WalletWithAta {
@@ -77,7 +97,9 @@ const createFeePayerWallet = async (connection: anchor.web3.Connection, funds: n
 const findPDAForAuthority = async (programId: anchor.web3.PublicKey,
                                    authority: anchor.web3.PublicKey,
                                    walletHandle: string) : Promise<anchor.web3.PublicKey> => {
-    const [pda, _canonicalBump] = await anchor.web3.PublicKey.findProgramAddressSync([utf8.encode(walletHandle), authority.toBytes()], programId);
+    // The fund PDA is seeded with the fixed [u8; 15] handle (NUL-padded), matching
+    // the on-chain `account_handle` seed — not the raw UTF-8 bytes.
+    const [pda, _canonicalBump] = await anchor.web3.PublicKey.findProgramAddressSync([Uint8Array.from(encodeHandle(walletHandle)), authority.toBytes()], programId);
     return pda;
 }
 
@@ -163,7 +185,7 @@ const initializeAccount = async (program: Program<SquadMintMultiSig>,
     // const pdaATA = await findATAForPDAForAuthority(pda, mint)
     const pdaATA = await findATAForPDAForAuthority2(program.programId, pda)
     console.log("🦾️ Found PDA on our Client for Wallet:  \n" + walletHandle + " PDA: \n"  + pda.toBase58() + "  Authority: \n" + owner.publicKey.toBase58() + " PDA ATA: \n" + pdaATA + " mint \n" + mint.toBase58() + "And fee payer:  \n" + squadMintFeePayer.publicKey.toBase58())
-    await program.methods.initialize(walletHandle, new BN(amountToSmalletDecimal(1.11)))
+    await program.methods.initialize(encodeHandle(walletHandle), new BN(amountToSmalletDecimal(1.11)))
         .accounts({
             multisigOwner: owner.publicKey,
             feePayer: squadMintFeePayer.publicKey,
@@ -204,7 +226,9 @@ const checkAccountFieldsAreInitializedCorrectly = async (
     const fund = await program.account.squadMintFund.fetch(pda);
 
     expect(fund.owner.toBase58()).to.equal(walletOwner.toBase58());
-    expect(fund.accountHandle).to.equal(accountHandle);
+    // account_handle is now a fixed [u8; 15] padded with trailing NULs — decode
+    // back to the original string before comparing.
+    expect(decodeHandle(fund.accountHandle)).to.equal(accountHandle);
     expect(fund.hasActiveVote).to.be.false;
     expect(fund.members).to.have.lengthOf(1);
     expect(fund.members[0].toBase58()).to.equal(walletOwner.toBase58());
@@ -431,5 +455,7 @@ export {
     findATAForPDAForJoinCustodialAccount,
     initiateJoinRequest,
     addMember,
+    decodeHandle,
+    encodeHandle,
     WalletWithAta, rejectMember
 };

@@ -34,6 +34,7 @@ import {
     amountToSmalletDecimal,
     createWallet,
     decimals,
+    encodeHandle,
     findATAForPDAForAuthority,
     findATAForPDAForAuthority2,
     findATAForPDAForJoinCustodialAccount,
@@ -384,7 +385,7 @@ describe("SquadMint — hacker / red-team tests", () => {
         const pda = await findPDAForAuthority(program.programId, owner.publicKey, "hk_fakeMint");
 
         const attempt = program.methods
-            .initialize("hk_fakeMint", JOIN_AMOUNT())
+            .initialize(encodeHandle("hk_fakeMint"), JOIN_AMOUNT())
             .accounts({
                 multisigOwner: owner.publicKey,
                 feePayer: feePayer.publicKey,

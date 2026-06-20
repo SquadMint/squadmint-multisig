@@ -11,9 +11,7 @@ import {
     addMember,
     amountToSmalletDecimal,
     checkAccountFieldsAreInitializedCorrectly,
-    createFeePayerWallet,
-    createTestMint,
-    createWallet, decimals, findATAForPDAForAuthority,
+    createWallet, decimals, decodeHandle, encodeHandle, findATAForPDAForAuthority,
     findATAForPDAForAuthority2, findATAForPDAForJoinCustodialAccount,
     findPDAForAuthority, findPDAForJoinCustodialAccount,
     findPDAForMultisigTransaction,
@@ -47,6 +45,26 @@ let testMint: { mintPubkey: PublicKey; tokenAccountPubkey: PublicKey }
 // Program-enforced minimum (SquadMintFund::SQUAD_MINT_MIN_AMOUNT = 100_000
 // base units = 0.1 USDC). Proposals below this are rejected (InvalidProposalAmount).
 const MIN_PROPOSAL = new anchor.BN(100_000);
+
+// ---- Bitmask vote helpers -------------------------------------------------
+// Votes are now stored as two u16 bitmasks on the Transaction account:
+//   voted_mask -> bit i set if member i has voted (participation)
+//   votes      -> bit i set if member i voted YES
+// Anchor deserializes a u16 to a plain JS number, so we can use bitwise ops.
+const bitFor = (members: PublicKey[], who: PublicKey): number => {
+    const idx = members.findIndex((m) => m.toBase58() === who.toBase58());
+    if (idx < 0) throw new Error("member not found in fund");
+    return 1 << idx;
+};
+const hasBit = (mask: number, bit: number): boolean => (mask & bit) !== 0;
+const popcount = (mask: number): number => {
+    let n = 0;
+    while (mask) {
+        mask &= mask - 1;
+        n++;
+    }
+    return n;
+};
 
 before(async () => {
     chaiAsPromised = await import("chai-as-promised");
@@ -136,7 +154,7 @@ describe("SquadMint Multisig program tests", () => {
         expect(ataAccount.amount).to.not.be.undefined;
         expect(ataAccount.delegate).to.be.null;
         const [expectedPda, bump] = PublicKey.findProgramAddressSync(
-            [Buffer.from("openFundWallet"), walletOwnerAndCreator.keyPair.publicKey.toBuffer()],
+            [Buffer.from(encodeHandle("openFundWallet")), walletOwnerAndCreator.keyPair.publicKey.toBuffer()],
             program.programId
         );
         expect(pda.toBase58()).to.equal(expectedPda.toBase58());
@@ -543,10 +561,12 @@ describe("SquadMint Multisig program tests", () => {
 
         expect(oFundTxProposal.belongsToSquadMintFund.toBase58()).to.be.equal(pda.toBase58())
         expect(oFundTxProposal.didMeetThreshold).to.be.equal(false)
-        expect(oFundTxProposal.executors).to.have.lengthOf(1);
-        expect(oFundTxProposal.votes).to.have.lengthOf(1);
-        expect(oFundTxProposal.executors[0].toBase58())
-            .to.equal(memberOpenFundWallet.keyPair.publicKey.toBase58());
+        // Only the proposer has voted, and their auto-vote is YES, so both masks
+        // equal exactly the proposer's bit (one participant, one YES).
+        const proposerBit = bitFor(openFundWallet.members, memberOpenFundWallet.keyPair.publicKey);
+        expect(popcount(oFundTxProposal.votedMask)).to.equal(1);
+        expect(oFundTxProposal.votedMask).to.equal(proposerBit);
+        expect(oFundTxProposal.votes).to.equal(proposerBit);
 
         expect(oFundTxProposal.messageData.proposedToAccount.toBase58()).to.be.equal(proposedToWallet.keyPair.publicKey.toBase58())
         expect(oFundTxProposal.messageData.amount.eq(new BN(amount))).to.be.true;
@@ -772,8 +792,9 @@ describe("SquadMint Multisig program tests", () => {
 
         const multisigAccount2 = await getAccount(connection, ata)
 
-        expect(f.votes[0])
-            .to.equal(true);
+        // Proposer (owner, the only member) auto-voted YES: their bit is set in both masks.
+        const proposerBitF = bitFor(openFundWallet.members, walletOwnerAndCreator2.keyPair.publicKey);
+        expect(hasBit(f.votes, proposerBitF)).to.equal(true);
 
         expect(multisigAccount2.amount).to.equal(BigInt(10 ** 6 * 2));
 
@@ -821,8 +842,8 @@ describe("SquadMint Multisig program tests", () => {
 
         const multisig = await program.account.squadMintFund.fetch(pda);
 
-        expect(f.votes[0])
-            .to.equal(true);
+        // `f` is the pre-NACK snapshot: still just the proposer's YES bit.
+        expect(hasBit(f.votes, proposerBitF)).to.equal(true);
         expect(multisigAccount2.amount).to.equal(BigInt(10 ** 6 * 2));
 
         expect(multisig.hasActiveVote).to.be.false
@@ -916,7 +937,7 @@ describe("SquadMint Multisig program tests", () => {
         const pda = await findPDAForAuthority(program.programId, owner.publicKey, "lowJoinFund");
         const pdaAta = await findATAForPDAForAuthority2(program.programId, pda);
 
-        const result = program.methods.initialize("lowJoinFund", new BN(50000))
+        const result = program.methods.initialize(encodeHandle("lowJoinFund"), new BN(50000))
             .accounts({
                 multisigOwner: owner.publicKey,
                 feePayer: squadMintFeePayer.publicKey,
@@ -938,7 +959,7 @@ describe("SquadMint Multisig program tests", () => {
         const pda = await findPDAForAuthority(program.programId, walletOwnerAndCreator2.keyPair.publicKey, "openFundWallet");
         const fund = await program.account.squadMintFund.fetch(pda);
         expect(fund.owner.toBase58()).to.equal(walletOwnerAndCreator2.keyPair.publicKey.toBase58());
-        expect(fund.accountHandle).to.equal("openFundWallet");
+        expect(decodeHandle(fund.accountHandle)).to.equal("openFundWallet");
         expect(fund.members).to.have.lengthOf(1);
     });
 
@@ -1001,7 +1022,8 @@ describe("SquadMint Multisig program tests", () => {
         const tx = await program.account.transaction.fetch(transactionDataPDA);
         expect(tx.messageData.nonce.eq(new BN(1))).to.be.true;
         expect(tx.messageData.amount.eq(proposalAmount)).to.be.true;
-        expect(tx.executors[0].toBase58()).to.equal(walletOwnerAndCreator.keyPair.publicKey.toBase58());
+        // Proposer auto-voted: their member bit is set in voted_mask.
+        expect(hasBit(tx.votedMask, bitFor(fund.members, walletOwnerAndCreator.keyPair.publicKey))).to.be.true;
     });
 
     it("Recipient actually receives funds after approved transfer", async () => {
@@ -1114,9 +1136,14 @@ describe("SquadMint Multisig program tests", () => {
         expect(fundAfterPartial.masterNonce.eq(new BN(2))).to.be.true;
 
         const txAfterPartial = await program.account.transaction.fetch(transactionDataPDA);
-        expect(txAfterPartial.votes).to.have.lengthOf(2);
-        expect(txAfterPartial.votes[0]).to.equal(true);
-        expect(txAfterPartial.votes[1]).to.equal(false);
+        // Two members have voted: proposer (owner) YES, second member NO.
+        const ownerBit = bitFor(fundWith3.members, walletOwnerAndCreator.keyPair.publicKey);
+        const memberBit = bitFor(fundWith3.members, memberOpenFundWallet.keyPair.publicKey);
+        expect(popcount(txAfterPartial.votedMask)).to.equal(2);
+        expect(hasBit(txAfterPartial.votedMask, ownerBit)).to.equal(true);
+        expect(hasBit(txAfterPartial.votes, ownerBit)).to.equal(true); // proposer YES
+        expect(hasBit(txAfterPartial.votedMask, memberBit)).to.equal(true); // member voted
+        expect(hasBit(txAfterPartial.votes, memberBit)).to.equal(false); // ...NO
         expect(txAfterPartial.didMeetThreshold).to.be.false;
 
         // Third member votes YES -> 2 yes (66%), 1 no (33%): threshold met
@@ -1151,6 +1178,196 @@ describe("SquadMint Multisig program tests", () => {
 
         const multisigAtaAfter = await getAccount(connection, ata);
         expect(multisigAtaAfter.amount).to.equal(multisigAtaBefore.amount - BigInt(proposalAmount.toString()));
+    });
+
+    // ==================== Bitmask voting sequence (design §6 Layer 2) ====================
+
+    // The core risk of the index-keyed bitmask design lives in *sequences* of
+    // instructions — specifically that appending a member mid-vote must never
+    // disturb the bits of members who already voted. This test exercises that
+    // end to end on a dedicated fund.
+    it("Bitmask votes survive a mid-vote member add (append never flips an existing bit)", async () => {
+        const FUND = "bitmaskSeqFund";
+        const joinAmount = new BN(amountToSmalletDecimal(1.11));
+
+        // --- 1. Fund with Alice (owner), Bob, Carol -------------------------
+        const alice = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
+        const bob = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
+        const carol = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
+
+        const pda = await initializeAccount(program, alice.keyPair, squadMintFeePayer, testMint.mintPubkey, FUND);
+        const ata = await findATAForPDAForAuthority2(program.programId, pda);
+
+        const joinAndAdd = async (member: WalletWithAta) => {
+            await initiateJoinRequest(program, pda, member, joinAmount, squadMintFeePayer, testMint.mintPubkey);
+            const custodial = await findPDAForJoinCustodialAccount(program.programId, pda, member.keyPair.publicKey);
+            await addMember(program, pda, custodial, member, alice, alice, squadMintFeePayer, testMint.mintPubkey);
+        };
+        await joinAndAdd(bob);
+        await joinAndAdd(carol);
+
+        let fund = await program.account.squadMintFund.fetch(pda);
+        expect(fund.members).to.have.lengthOf(3); // [Alice, Bob, Carol]
+
+        // --- 2. Open a proposal; Alice (proposer) auto-votes YES ------------
+        const txPDA = await findPDAForMultisigTransaction(program.programId, pda, FUND, fund.masterNonce);
+        const proposalAmount = MIN_PROPOSAL;
+        await program.methods
+            .createProposal(proposalAmount, proposedToWallet.keyPair.publicKey)
+            .accounts({
+                transaction: txPDA,
+                multisig: pda,
+                feePayer: squadMintFeePayer.publicKey,
+                proposer: alice.keyPair.publicKey,
+                mint: testMint.mintPubkey,
+                proposedToOwner: proposedToWallet.keyPair.publicKey,
+                multisigAta: ata,
+                proposedToAta: proposedToWallet.ataAccount.address,
+                tokenProgram: TOKEN_PROGRAM_ID,
+                associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+                systemProgram: anchor.web3.SystemProgram.programId
+            })
+            .signers([squadMintFeePayer, alice.keyPair])
+            .rpc();
+
+        const aliceBit = bitFor(fund.members, alice.keyPair.publicKey);
+        const bobBit = bitFor(fund.members, bob.keyPair.publicKey);
+        const carolBit = bitFor(fund.members, carol.keyPair.publicKey);
+
+        let tx = await program.account.transaction.fetch(txPDA);
+        expect(popcount(tx.votedMask)).to.equal(1);
+        expect(tx.votedMask).to.equal(aliceBit);
+        expect(tx.votes).to.equal(aliceBit); // auto-vote is YES
+
+        const vote = async (member: WalletWithAta, v: boolean) =>
+            program.methods.submitAndExecute(v)
+                .accounts({
+                    transaction: txPDA,
+                    multisig: pda,
+                    feePayer: squadMintFeePayer.publicKey,
+                    submitter: member.keyPair.publicKey,
+                    mint: testMint.mintPubkey,
+                    proposedToOwner: proposedToWallet.keyPair.publicKey,
+                    multisigAta: ata,
+                    proposedToAta: proposedToWallet.ataAccount.address,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                    associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+                    systemProgram: anchor.web3.SystemProgram.programId
+                })
+                .signers([squadMintFeePayer, member.keyPair])
+                .rpc();
+
+        // --- 3. Bob votes NO -> 1 YES (33%), 1 NO (33%): still open ---------
+        await vote(bob, false);
+        tx = await program.account.transaction.fetch(txPDA);
+        expect(popcount(tx.votedMask)).to.equal(2);
+        expect(hasBit(tx.votes, aliceBit)).to.equal(true);
+        expect(hasBit(tx.votedMask, bobBit)).to.equal(true);
+        expect(hasBit(tx.votes, bobBit)).to.equal(false); // NO leaves the bit clear
+
+        // Snapshot before the mid-vote add — these masks must NOT change.
+        const votedBefore = tx.votedMask;
+        const votesBefore = tx.votes;
+
+        // --- 4. Add Dave mid-vote (appends at index 3) ---------------------
+        const dave = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
+        await joinAndAdd(dave);
+
+        fund = await program.account.squadMintFund.fetch(pda);
+        expect(fund.members).to.have.lengthOf(4); // Dave appended
+        const daveBit = bitFor(fund.members, dave.keyPair.publicKey);
+        expect(daveBit).to.equal(1 << 3); // index 3, no existing index shifted
+
+        // --- 5. CRITICAL: Alice & Bob bits are untouched by the append -----
+        tx = await program.account.transaction.fetch(txPDA);
+        expect(tx.votedMask).to.equal(votedBefore);
+        expect(tx.votes).to.equal(votesBefore);
+        expect(popcount(tx.votedMask)).to.equal(2);
+
+        // --- 6. Dave votes YES -> 2 YES (50%), 1 NO (25%): still open ------
+        await vote(dave, true);
+        tx = await program.account.transaction.fetch(txPDA);
+        expect(popcount(tx.votedMask)).to.equal(3);
+        expect(hasBit(tx.votedMask, daveBit)).to.equal(true);
+        expect(hasBit(tx.votes, daveBit)).to.equal(true);
+        // Alice & Bob still exactly as before.
+        expect(hasBit(tx.votes, aliceBit)).to.equal(true);
+        expect(hasBit(tx.votedMask, bobBit)).to.equal(true);
+        expect(hasBit(tx.votes, bobBit)).to.equal(false);
+        expect(await program.account.squadMintFund.fetch(pda).then(f => f.hasActiveVote)).to.be.true;
+
+        // --- 7. Double-vote protection: Dave voting again is a no-op -------
+        await vote(dave, true);
+        tx = await program.account.transaction.fetch(txPDA);
+        expect(popcount(tx.votedMask)).to.equal(3);
+        expect(tx.votes).to.equal(aliceBit | daveBit); // unchanged
+
+        // --- 8. Carol votes YES -> 3 YES of 4 (75% >= 51%): executes ------
+        const vaultBefore = await getAccount(connection, ata);
+        const recipientBefore = await getAccount(connection, proposedToWallet.ataAccount.address);
+        await vote(carol, true);
+
+        const fundAfter = await program.account.squadMintFund.fetch(pda);
+        expect(fundAfter.hasActiveVote).to.be.false;
+        expect(fundAfter.masterNonce.eq(new BN(1))).to.be.true;
+
+        // Proposal auto-closed on threshold -> account is gone.
+        await expect(program.account.transaction.fetch(txPDA)).to.be.rejected;
+
+        const vaultAfter = await getAccount(connection, ata);
+        const recipientAfter = await getAccount(connection, proposedToWallet.ataAccount.address);
+        expect(vaultAfter.amount).to.equal(vaultBefore.amount - BigInt(proposalAmount.toString()));
+        expect(recipientAfter.amount).to.equal(recipientBefore.amount + BigInt(proposalAmount.toString()));
+    });
+
+    // ==================== Member index stability (bitmask safety invariant) ====================
+
+    // The bitmask vote design keys every vote on a member's INDEX in
+    // multisig.members (bit i == members[i]). That is only sound if add_member is
+    // strictly tail-append: it must never reorder or shift an existing index.
+    // `Vec::push` guarantees this in Rust, but this test proves it end to end
+    // through the real instruction + Anchor (de)serialization round-trip.
+    it("add_member is tail-append only — existing member indexes never shift", async () => {
+        const FUND = "tailAppendFund";
+        const joinAmount = new BN(amountToSmalletDecimal(1.11));
+
+        const owner = await createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2);
+        const pda = await initializeAccount(program, owner.keyPair, squadMintFeePayer, testMint.mintPubkey, FUND);
+
+        const joinAndAdd = async (member: WalletWithAta) => {
+            await initiateJoinRequest(program, pda, member, joinAmount, squadMintFeePayer, testMint.mintPubkey);
+            const custodial = await findPDAForJoinCustodialAccount(program.programId, pda, member.keyPair.publicKey);
+            await addMember(program, pda, custodial, member, owner, owner, squadMintFeePayer, testMint.mintPubkey);
+        };
+
+        // Owner occupies index 0 from initialize.
+        let members = (await program.account.squadMintFund.fetch(pda)).members.map(m => m.toBase58());
+        expect(members).to.deep.equal([owner.keyPair.publicKey.toBase58()]);
+
+        // Add several members; after each add assert (a) the previous array is an
+        // exact prefix of the new one (nothing shifted/reordered) and (b) the new
+        // member landed at exactly the next/last index.
+        const newcomers = await Promise.all(
+            [0, 1, 2].map(() => createWallet(connection, testMint.mintPubkey, squadMintFeePayer, 2))
+        );
+
+        for (const newcomer of newcomers) {
+            const before = members;
+            await joinAndAdd(newcomer);
+            const after = (await program.account.squadMintFund.fetch(pda)).members.map(m => m.toBase58());
+
+            expect(after).to.have.lengthOf(before.length + 1); // grew by exactly one
+            expect(after.slice(0, before.length)).to.deep.equal(before); // prefix unchanged → no index shifted
+            expect(after[after.length - 1]).to.equal(newcomer.keyPair.publicKey.toBase58()); // appended at the tail
+
+            members = after;
+        }
+
+        // Final ordering is exactly the insertion order: [owner, c0, c1, c2].
+        expect(members).to.deep.equal([
+            owner.keyPair.publicKey.toBase58(),
+            ...newcomers.map(n => n.keyPair.publicKey.toBase58()),
+        ]);
     });
 
     // ==================== Transaction/Multisig Mismatch (P0 Security Fix) ====================

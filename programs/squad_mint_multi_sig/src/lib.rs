@@ -34,15 +34,16 @@ pub mod squad_mint_multi_sig {
 
     pub fn initialize(
         ctx: Context<Initialize>,
-        account_handle: String,
+        account_handle: [u8; SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE],
         join_amount: u64,
     ) -> Result<()> {
         msg!("Greetings from: {:?}", ctx.program_id);
-        if account_handle.is_empty()
-            || account_handle.len() > SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE
-        {
-            return Err(error!(ErrorCode::HandleLenNotValid));
-        }
+        // The handle is a fixed [u8; 15] (the UTF-8 string left-aligned, NUL-padded
+        // by the client). The only thing to reject is an empty handle (all NUL).
+        require!(
+            account_handle.iter().any(|&b| b != 0),
+            ErrorCode::HandleLenNotValid
+        );
         require!(
             join_amount >= SquadMintFund::SQUAD_MINT_MIN_AMOUNT,
             ErrorCode::InsufficientJoiningAmount
@@ -54,7 +55,7 @@ pub mod squad_mint_multi_sig {
         fund.has_active_vote = false;
         fund.master_nonce = 0;
         fund.join_amount = join_amount;
-        fund.account_handle = account_handle.to_string();
+        fund.account_handle = account_handle;
 
         Ok(())
     }
@@ -329,8 +330,17 @@ pub mod squad_mint_multi_sig {
             proposed_to_account,
             nonce: multisig.master_nonce,
         };
-        transaction.executors = vec![proposer];
-        transaction.votes = vec![true];
+        // The proposer auto-casts a YES vote. .position() doubles as the
+        // membership check (already guaranteed by the account constraint) and
+        // yields the proposer's bit index in `multisig.members`.
+        let proposer_index = multisig
+            .members
+            .iter()
+            .position(|m| m == &proposer)
+            .ok_or(ErrorCode::MemberNotPartOfFund)?;
+        let proposer_bit = 1u16 << proposer_index;
+        transaction.voted_mask = proposer_bit; // proposer has voted
+        transaction.votes = proposer_bit; // ...and the vote is YES
         transaction.did_meet_threshold = false;
         multisig.has_active_vote = true;
         // This Transaction's rent is auto-reclaimed in submit_and_execute when
@@ -378,16 +388,22 @@ pub mod squad_mint_multi_sig {
             ErrorCode::InvalidDestinationOwner
         );
 
-        let submitter_has_voted = transaction
-            .executors
-            .contains(&ctx.accounts.submitter.key());
+        // Find the submitter's index in the member list — that's their bit.
+        // .position() does double duty: confirms membership AND yields the bit
+        // index, replacing the separate .contains() membership check.
+        let member_index = multisig
+            .members
+            .iter()
+            .position(|m| m == &ctx.accounts.submitter.key())
+            .ok_or(ErrorCode::MemberNotPartOfFund)?;
+        let bit = 1u16 << member_index;
+
+        let submitter_has_voted = transaction.voted_mask & bit != 0;
         if !submitter_has_voted {
-            require!(
-                multisig.members.contains(&ctx.accounts.submitter.key()),
-                ErrorCode::MemberNotPartOfFund
-            );
-            transaction.executors.push(ctx.accounts.submitter.key());
-            transaction.votes.push(vote);
+            transaction.voted_mask |= bit; // mark as voted (double-vote protection)
+            if vote {
+                transaction.votes |= bit; // record YES; NO leaves the bit clear
+            }
             msg!(
                 "Has Voted {} on Fund {} to Fund {}. The vote: {}",
                 &ctx.accounts.submitter.key(),
@@ -397,8 +413,11 @@ pub mod squad_mint_multi_sig {
             )
         }
 
-        let yes_votes = transaction.votes.iter().filter(|&&v| v).count() as u64;
-        let no_votes = transaction.votes.iter().filter(|&&v| !v).count() as u64;
+        // YES = set bits in `votes`. NO = voted but not YES (voted_mask & !votes).
+        // Plain count_ones() is correct because members can't be deactivated while
+        // a proposal is open, so every set bit belongs to a currently-active member.
+        let yes_votes = transaction.votes.count_ones() as u64;
+        let no_votes = (transaction.voted_mask & !transaction.votes).count_ones() as u64;
         let total_members = multisig.members.len() as u64;
         let yes_threshold = SquadMintFund::SQUAD_MINT_YES_THRESHOLD_PERCENTAGE;
         let no_threshold = SquadMintFund::SQUAD_MINT_NO_THRESHOLD_PERCENTAGE;
@@ -425,7 +444,7 @@ pub mod squad_mint_multi_sig {
                 );
                 let multisig_owner_key = multisig.owner.key();
                 let multisig_seeds = &[
-                    multisig.account_handle.as_bytes(),
+                    multisig.account_handle.as_ref(),
                     multisig_owner_key.as_ref(),
                     &[ctx.bumps.multisig],
                 ];
@@ -466,7 +485,7 @@ pub mod squad_mint_multi_sig {
 }
 
 #[derive(Accounts)]
-#[instruction(account_handle: String)]
+#[instruction(account_handle: [u8; SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE])]
 pub struct Initialize<'info> {
     #[account(mut)]
     pub fee_payer: Signer<'info>,
@@ -474,7 +493,7 @@ pub struct Initialize<'info> {
     pub multisig_owner: Signer<'info>,
     #[account(
         init,
-        seeds = [account_handle.as_bytes(), multisig_owner.key().as_ref()],
+        seeds = [account_handle.as_ref(), multisig_owner.key().as_ref()],
         bump,
         payer = fee_payer,
         space = 8 + SquadMintFund::MAX_SIZE
@@ -505,7 +524,11 @@ pub struct Initialize<'info> {
 #[derive(Default, Debug)]
 pub struct SquadMintFund {
     owner: Pubkey, // This is the person that init creating this fund he will soon add contributors
-    account_handle: String, // convert to [u8; 15]
+    // Fixed-width handle: exactly SQUAD_MINT_MAX_HANDLE_SIZE (15) bytes — the UTF-8
+    // handle left-aligned and right-padded with trailing NUL (0) bytes. The client
+    // pads the string before calling `initialize`. The same 15 bytes are used as a
+    // PDA seed here and on every re-derivation, so derivation is always identical.
+    account_handle: [u8; SquadMintFund::SQUAD_MINT_MAX_HANDLE_SIZE],
     has_active_vote: bool,
     members: Vec<Pubkey>,
     join_amount: u64,  // u32
@@ -600,7 +623,7 @@ pub struct CreateJoinRequestProposal<'info> {
 #[derive(Accounts)]
 pub struct AddMember<'info> {
     #[account(mut,
-        seeds = [multisig.account_handle.as_bytes(), multisig.owner.key().as_ref()],
+        seeds = [multisig.account_handle.as_ref(), multisig.owner.key().as_ref()],
         bump
     )]
     pub multisig: Account<'info, SquadMintFund>,
@@ -649,7 +672,7 @@ pub struct AddMember<'info> {
 #[derive(Accounts)]
 pub struct RejectMember<'info> {
     #[account(mut,
-        seeds = [multisig.account_handle.as_bytes(), multisig.owner.key().as_ref()],
+        seeds = [multisig.account_handle.as_ref(), multisig.owner.key().as_ref()],
         bump
     )]
     pub multisig: Account<'info, SquadMintFund>,
@@ -704,12 +727,12 @@ pub struct RejectMember<'info> {
 
 #[account]
 #[derive(Default, Debug)]
-pub struct Transaction {
+pub struct Transaction { // Payment Proposal TX
     pub belongs_to_squad_mint_fund: Pubkey, // Multisig account , this could be part of transaction message
-    pub executors: Vec<Pubkey>,             // Verified signer Pubkeys
-    pub votes: Vec<bool>,                   //
-    pub message_data: TransactionMessage,   // Signable message
-    pub did_meet_threshold: bool,           // Replay protection
+    pub voted_mask: u16, // bit i set = member i has cast a vote (participation)
+    pub votes: u16,      // bit i set = member i voted YES (NO leaves the bit clear)
+    pub message_data: TransactionMessage, // Signable message
+    pub did_meet_threshold: bool,         // Replay protection
 }
 #[account]
 #[derive(Default, Debug)]
@@ -738,7 +761,7 @@ pub struct SubmitAndExecute<'info> {
     pub transaction: Account<'info, Transaction>,
     #[account(
         mut,
-        seeds = [multisig.account_handle.as_bytes(), multisig.owner.key().as_ref()],
+        seeds = [multisig.account_handle.as_ref(), multisig.owner.key().as_ref()],
         bump,
     )]
     pub multisig: Account<'info, SquadMintFund>,
@@ -791,8 +814,8 @@ impl SquadMintFund {
 
     // Borsh on-chain byte budget. The 8-byte account discriminator is added
     // separately at the `space = 8 + MAX_SIZE` constraint.
-    pub const MAX_SIZE: usize = 32                                                      // owner
-        + (4 + Self::SQUAD_MINT_MAX_HANDLE_SIZE)                // account_handle: 4-byte len + bytes
+    pub const MAX_SIZE: usize = 32                              // owner
+        + Self::SQUAD_MINT_MAX_HANDLE_SIZE                      // account_handle: fixed [u8; 15], no length prefix
         + 1                                                     // has_active_vote
         + (4 + Self::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE * 32)    // members: 4-byte len + pubkeys
         + 8                                                     // join_amount
@@ -810,10 +833,13 @@ impl JoinRequestCustodialWallet {
 }
 
 impl Transaction {
-    pub const MAX_SIZE: usize = 32                                                          // belongs_to_squad_mint_fund
-        + (4 + SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE * 32) // executors: len + pubkeys
-        + (4 + SquadMintFund::SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE)      // votes: len + 1 byte/bool
-        + TransactionMessage::SIZE                                    // message_data
+    // Two u16 bitmasks (voted_mask, votes) replace the old executors/votes Vecs,
+    // collapsing ~503 bytes of variable-length data into a fixed 4 bytes. The u16
+    // width holds 16 members, which comfortably covers SQUAD_MINT_MAX_PRIVATE_GROUP_SIZE.
+    pub const MAX_SIZE: usize = 32   // belongs_to_squad_mint_fund
+        + 2                          // voted_mask
+        + 2                          // votes
+        + TransactionMessage::SIZE   // message_data
         + 1; // did_meet_threshold
 }
 
