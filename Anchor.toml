@@ -27,11 +27,18 @@ wallet = "~/keypair-dev-1.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
-# Build with the devnet mint pinned, then deploy with the devnet wallet.
-deploy-devnet = "anchor run build-devnet && anchor deploy --provider.cluster devnet --provider.wallet ~/keypair-dev-1.json"
+# Fails if declare_id!, Anchor.toml [programs.*], and the target/deploy keypair
+# disagree on the program id. Cheap, no network — runnable in CI and pre-deploy.
+id-check = "bash scripts/check-program-id.sh"
+# Strict devnet upgrade: pinned program id + buffer write + `solana program show`
+# smoke test + post-upgrade slot check. Replaces bare `anchor deploy`, which
+# silently shipped to a new address (JC38P1y…) when target/deploy keypair drifted.
+# Point at Helius (avoids public-devnet rate limits):
+#   SOLANA_URL="https://devnet.helius-rpc.com/?api-key=…" anchor run deploy-devnet
+deploy-devnet = "bash scripts/deploy-devnet.sh"
 build-devnet = "SQUADMINT_USDC_MINT=GHCrkDPkTDigsEXMctzEsWc48nWPufcgaqqK4vexQX1f anchor build --provider.cluster devnet --provider.wallet ~/keypair-dev-1.json"
 # Reproducible mainnet artifact -> target/verifiable/squad_mint_multi_sig.so.
-build-prod-verifiable = "SQUADMINT_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v anchor build --verifiable -e SQUADMINT_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v -- --features mainnet"
+build-prod-verifiable = "bash scripts/check-program-id.sh && SQUADMINT_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v anchor build --verifiable -e SQUADMINT_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v -- --features mainnet"
 # NOTE: the program's upgrade authority is now the Squads multisig vault
 # (ANNvGaawEDSatXvzMnz1Tr6HrKHaFebo8UrPprAvxAvL), so you can NO LONGER
 # `anchor deploy`/upgrade directly — that needs the wallet to BE the authority
