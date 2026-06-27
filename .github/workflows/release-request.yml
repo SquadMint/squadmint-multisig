@@ -127,6 +127,22 @@ jobs:
           gh release upload "${{ github.event.inputs.tag }}" \
             "${PROGRAM_SO}" squad_mint_multi_sig.so.sha256 --clobber
 
+      # Attach the Anchor IDL (+ checksum) so integrators — the mobile app, the
+      # backend, explorers — can pin the exact program interface for this build.
+      # The IDL is emitted into target/idl/ by the `anchor test` build above.
+      - name: Attach IDL to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          IDL="target/idl/squad_mint_multi_sig.json"
+          test -f "$IDL" || { echo "::error::IDL not found at $IDL (expected from the anchor build)"; exit 1; }
+          # Clean asset name + path-free checksum file.
+          cp "$IDL" squad_mint_multi_sig.idl.json
+          sha256sum squad_mint_multi_sig.idl.json > squad_mint_multi_sig.idl.json.sha256
+          gh release upload "${{ github.event.inputs.tag }}" \
+            squad_mint_multi_sig.idl.json squad_mint_multi_sig.idl.json.sha256 --clobber
+
       # Keypair to $HOME (never the repo) so it can't be committed.
       - name: Point CLI at mainnet + deployer
         run: |
