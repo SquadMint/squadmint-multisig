@@ -51,6 +51,14 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
+      # Cheap, secretless, toolchain-free tripwire — fails the release the moment
+      # declare_id!() and Anchor.toml [programs.*] disagree on (or drift from) the
+      # pinned program id. Runs first so a mismatch aborts before the ~10-min
+      # toolchain install/build. This replaces the standalone push/PR guard
+      # workflow: the check that matters is the one gating a real release.
+      - name: Assert program id is pinned consistently
+        run: bash scripts/check-program-id.sh
+
       # The input must point at a real DRAFT so the final step has something to
       # publish (and we don't silently re-process an already-public release).
       - name: Verify a draft release exists for the tag
@@ -127,12 +135,58 @@ jobs:
           gh release upload "${{ github.event.inputs.tag }}" \
             "${PROGRAM_SO}" squad_mint_multi_sig.so.sha256 --clobber
 
+      # Attach the Anchor IDL (+ checksum) so integrators — the mobile app, the
+      # backend, explorers — can pin the exact program interface for this build.
+      # The IDL is emitted into target/idl/ by the `anchor test` build above.
+      - name: Attach IDL to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          IDL="target/idl/squad_mint_multi_sig.json"
+          test -f "$IDL" || { echo "::error::IDL not found at $IDL (expected from the anchor build)"; exit 1; }
+          # Clean asset name + path-free checksum file.
+          cp "$IDL" squad_mint_multi_sig.idl.json
+          sha256sum squad_mint_multi_sig.idl.json > squad_mint_multi_sig.idl.json.sha256
+          gh release upload "${{ github.event.inputs.tag }}" \
+            squad_mint_multi_sig.idl.json squad_mint_multi_sig.idl.json.sha256 --clobber
+
       # Keypair to $HOME (never the repo) so it can't be committed.
       - name: Point CLI at mainnet + deployer
         run: |
           solana config set --url "${{ secrets.RPC_URL }}"
           printf '%s' '${{ secrets.DEPLOYER_KEYPAIR }}' > "$HOME/deployer.json"
           solana config set --keypair "$HOME/deployer.json"
+
+      # Publish the IDL ON-CHAIN so integrators can `anchor idl fetch` the exact
+      # interface for this build (the GitHub-release attach above is convenience;
+      # this is the canonical, program-pinned copy). Idempotent: `idl init` the
+      # first time the account doesn't exist, `idl upgrade` thereafter.
+      #
+      # NOTE: the IDL account has its OWN authority, independent of the program's
+      # upgrade authority (the Squads vault). On first `idl init` that authority
+      # is set to the deployer keypair used here, so subsequent `idl upgrade`s
+      # must run with this same keypair. The verifiable build emitted the IDL to
+      # target/idl/ above.
+      - name: Publish IDL on-chain
+        env:
+          PROGRAM_ID: ${{ vars.PROGRAM_ID }}
+          CLUSTER: ${{ secrets.RPC_URL }}
+        run: |
+          set -euo pipefail
+          IDL="target/idl/squad_mint_multi_sig.json"
+          test -f "$IDL" || { echo "::error::IDL not found at $IDL (expected from the anchor build)"; exit 1; }
+          WALLET="$HOME/deployer.json"
+          if anchor idl fetch "$PROGRAM_ID" --provider.cluster "$CLUSTER" >/dev/null 2>&1; then
+            echo "Existing on-chain IDL found — upgrading."
+            anchor idl upgrade "$PROGRAM_ID" -f "$IDL" \
+              --provider.cluster "$CLUSTER" --provider.wallet "$WALLET"
+          else
+            echo "No on-chain IDL yet — initializing (authority = deployer keypair)."
+            anchor idl init "$PROGRAM_ID" -f "$IDL" \
+              --provider.cluster "$CLUSTER" --provider.wallet "$WALLET"
+          fi
+          echo "On-chain IDL published for $PROGRAM_ID."
 
       - name: Write buffer & set authority to the vault
         id: buffer
