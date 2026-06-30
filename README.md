@@ -12,11 +12,11 @@ by passing an on-chain vote.
 ## Latest mainnet release
 
 <!-- RELEASE-INFO:START -->
-- **Version:** v0.1.0
+- **Version:** v1.0.3
 - **Program ID:** BW1dtKfuqUPZxyYKfFCgUwo8tzqnGfw9of5L4yfAzuRz
-- **Verifiable .so SHA-256:** `9b5d4dff2c789323136f457552e0307dcb4c96f00a1403af6504943c1148e381`
-- **Upgrade buffer:** n/a (initial deploy)
-- **Prepared:** 2026-06-16
+- **Verifiable .so SHA-256:** `998e5188347bcf738ea98fda4a009c917566e9a8fb906117cec7a77a406d1830`
+- **Upgrade buffer:** 6DidfeyyADAiBsM9eEBuCSd7fRVTRUqLJhLDDqxC1dXr
+- **Prepared:** 2026-06-30
 <!-- RELEASE-INFO:END -->
 
 > This block is maintained automatically by the release workflow — see [Releases](#releases).
